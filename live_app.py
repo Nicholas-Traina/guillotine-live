@@ -12,8 +12,10 @@ import os
 import pandas as pd
 import streamlit as st
 
+import guillotine_history as gh
 import guillotine_live as gl
 import live_cards
+import live_charts
 
 st.set_page_config(page_title="Guillotine live", page_icon="⚔️", layout="wide", initial_sidebar_state="collapsed")
 st.markdown(live_cards.CSS, unsafe_allow_html=True)
@@ -36,26 +38,40 @@ def cached_inputs(path, mtime):
     return gl.load_inputs(path)
 
 
-def log_snapshot(snap, season, week):
-    """Append to a CSV while games are in progress (lets us check calibration against real games later)."""
-    if os.environ.get("GUILLOTINE_NO_LOG") or not any(g["state"] == "in" for g in snap["games"].values()):
-        return
-    df = snap["standings"][["owner", "current", "expected_final", "sd_remaining", "p_last", "p_eliminated", "p_first"]].copy()
-    df.insert(0, "time", snap["fetched_at"])
-    file = os.path.join(gl.HERE, f"live_snapshots_{season}_wk{week}.csv")
+@st.cache_resource
+def start_sampler():
+    """One background recorder per server process: keeps the Trends history whether or not anyone has the page open."""
+    if os.environ.get("GUILLOTINE_NO_LOG"):                      # tests / previews must not write real history
+        return None
+    sampler = gh.Sampler()
+    sampler.start()
+    return sampler
+
+
+sampler = start_sampler()
+
+
+def recorder_status_text():
+    """One line saying whether the background recorder is alive (so an empty chart is never a mystery)."""
+    if sampler is None:
+        return ""
+    when = gl.format_central(sampler.last_time, seconds=False) if sampler.last_time else "starting up"
+    state = {"recorded": "recording (a game is live)", "idle": "waiting for a game to start"}.get(sampler.last_status, sampler.last_status)
+    return f"Recorder: {state} · last check {when}" + (" · hit an error, retrying" if sampler.last_error else "")
+
+
+def show_chart(chart):
     try:
-        df.to_csv(file, mode="a", header=not os.path.exists(file), index=False)
-    except Exception:
-        pass
+        st.altair_chart(chart, width="stretch")
+    except TypeError:                                            # older Streamlit
+        st.altair_chart(chart, use_container_width=True)
 
 
 @st.cache_data(ttl=15, show_spinner=False)
 def cached_snapshot(path, mtime, season, week, immune, k, n_sims):
     """One computation shared by every viewer (at most one Sleeper/ESPN fetch + simulation per 15 seconds)."""
     inputs = cached_inputs(path, mtime)
-    snap = gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=list(immune), k=k, n_sims=n_sims)
-    log_snapshot(snap, season, week)
-    return snap
+    return gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=list(immune), k=k, n_sims=n_sims)
 
 
 # ---------------------------------------------------------------- sidebar (settings; collapsed by default)
@@ -141,7 +157,7 @@ def live_panel():
     cols_, asc = SORTS[sort_by]
     s = s.sort_values(cols_, ascending=asc).reset_index(drop=True)
 
-    tab_stand, tab_detail, tab_games = st.tabs(["Standings", "Team detail", "NFL games"])
+    tab_stand, tab_detail, tab_games, tab_trends = st.tabs(["Standings", "Team detail", "NFL games", "Trends"])
 
     with tab_stand:
         if view == "Cards":
@@ -202,6 +218,33 @@ def live_panel():
             rows.append({"Game": f"{away} @ {home}", "Status": g["detail"], "Score": sc, "_o": {"in": 0, "pre": 1, "post": 2}[g["state"]], "_k": g["kickoff"] or ""})
         gdf = pd.DataFrame(rows).sort_values(["_o", "_k"]).drop(columns=["_o", "_k"])
         st.dataframe(gdf, hide_index=True, width="stretch", height=min(700, 40 + 35 * len(gdf)))
+
+    with tab_trends:
+        hist = gh.load_history(int(season), int(week))
+        if hist.empty:
+            st.info("No live-game history for this week yet. The server records the odds every ~30 seconds while an NFL game is in "
+                    "progress, so this fills in once the first game kicks off.")
+            st.caption(recorder_status_text())
+        else:
+            all_teams = sorted(hist["owner"].unique(), key=str.lower)
+            latest = hist[hist["epoch"] == hist["epoch"].max()].set_index("owner")
+            riskiest = [t for t in latest["p_eliminated"].sort_values(ascending=False).index if t in all_teams]
+            default = ([my_team] if my_team in all_teams else []) + [t for t in riskiest if t != my_team]
+            chosen = st.multiselect("Teams to plot", all_teams, default=default[:5], key="trend_teams")
+            if not chosen:
+                st.info("Pick at least one team above.")
+            else:
+                breaks = gh.find_breaks(hist)
+                for metric in ("p_eliminated", "p_in_elim_spot", "p_first"):
+                    title, blurb = live_charts.TITLES[metric]
+                    st.markdown(f"**{title}**")
+                    st.caption(blurb)
+                    show_chart(live_charts.trend_chart(gh.plot_frame(hist, chosen, metric), breaks))
+                first, last = hist["epoch"].min(), hist["epoch"].max()
+                st.caption(f"Time only runs while an NFL game is on (dotted lines mark breaks, labelled with when play resumed, in Central time). "
+                           f"{hist['live_seconds'].max() / 3600:.1f} live hours recorded, {gl.format_central(first, seconds=False, day=True)} to "
+                           f"{gl.format_central(last, seconds=False, day=True)}. Uses the shared immune-team / cut settings. "
+                           f"History restarts if the server restarts. {recorder_status_text()}")
 
 
 live_panel()

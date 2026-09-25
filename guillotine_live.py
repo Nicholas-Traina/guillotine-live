@@ -86,6 +86,17 @@ def _err_text(e):
     return f"{type(e).__name__}: {str(e)[:60]}"
 
 
+def _parse_iso_epoch(text):
+    """'2026-09-27T17:00Z' (ESPN, no seconds) or '2026-09-27T17:00:00Z' -> UTC epoch seconds, else None."""
+    import calendar
+    for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return calendar.timegm(time.strptime(str(text), fmt))
+        except ValueError:
+            continue
+    return None
+
+
 def parse_espn_events(events):
     """ESPN scoreboard events -> {sleeper_team: game}. Malformed events are skipped instead of failing the whole feed."""
     games = {}
@@ -96,10 +107,15 @@ def parse_espn_events(events):
             teams = {c["homeAway"]: c for c in comp["competitors"]}
             state = st["type"]["state"]
             f = fraction_left(state, st.get("period"), st.get("clock"))
+            detail = st["type"].get("shortDetail") or st["type"].get("detail", "")
+            if state == "pre":                                    # ESPN words kickoff in Eastern time; show Central
+                ko = _parse_iso_epoch(ev.get("date"))
+                if ko:
+                    detail = format_central(ko, seconds=False, day=True)
             ab = {side: ESPN_TO_SLEEPER.get(teams[side]["team"]["abbreviation"], teams[side]["team"]["abbreviation"]) for side in ("home", "away")}
             for side, other in (("home", "away"), ("away", "home")):
                 games[ab[side]] = {
-                    "state": state, "fraction_left": f, "detail": st["type"].get("shortDetail") or st["type"].get("detail", ""),
+                    "state": state, "fraction_left": f, "detail": detail,
                     "opponent": ab[other], "home": side == "home", "score": teams[side].get("score"), "opp_score": teams[other].get("score"),
                     "kickoff": ev.get("date"), "estimated": False,
                 }
@@ -183,7 +199,7 @@ def fetch_game_states_estimated(season, week):
         state = SLEEPER_STATUS.get(g.get("status"), "pre")
         ko = kickoffs.get(g["home"]) or kickoffs.get(g["away"])
         if state == "pre":
-            f, detail = 1.0, "not started"
+            f, detail = 1.0, (format_central(ko, seconds=False, day=True) if ko else "not started")
         elif state == "post":
             f, detail = 0.0, "final"
         elif ko:
@@ -362,6 +378,7 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
     t["p_second_last"] = (rank == 1).mean(axis=1)
     t["p_eliminated"] = ((rank_elig < k_eff) & ~immune[:, None]).mean(axis=1)
     t["p_first"] = (rank == T - 1).mean(axis=1)
+    t["p_in_elim_spot"] = (rank < min(int(k), T)).mean(axis=1)        # finishes in a cut position, whether or not immune
     t["immune"] = immune
     t["locked"] = (t["expected_remaining"] == 0) & (t["sd_remaining"] == 0)
     t["k"] = k_eff

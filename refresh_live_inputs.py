@@ -84,7 +84,8 @@ def load_cells():
 
 def summarize_changes(old, new):
     """What changed between two exports: the 'did any lineups change?' check."""
-    op, np_ = old["players"], new["players"]
+    op = {p: v for p, v in old["players"].items() if not v.get("free_agent")}
+    np_ = {p: v for p, v in new["players"].items() if not v.get("free_agent")}
     added, dropped = set(np_) - set(op), set(op) - set(np_)
     common = set(op) & set(np_)
     lineup = [p for p in common if op[p]["starter_at_export"] != np_[p]["starter_at_export"]]
@@ -99,6 +100,38 @@ def summarize_changes(old, new):
     if avail: parts.append(f"{len(avail)} injury/availability changes ({', '.join(name(p, np_) for p in avail[:6])})")
     if len(parts) == 1: parts.append("no roster, lineup or injury changes")
     return "; ".join(parts)
+
+
+def add_free_agent_pool(ns, payload, season, week):
+    """
+    Projections are refreshed once a day, but players get picked up off waivers all day. Project every relevant player who
+    is NOT on a roster too (anyone who has played this season, every K and defense, and anyone with an ADP), so a pickup put
+    into a lineup later gets a real projection instead of a generic fallback. Returns how many were added.
+    """
+    meta, frame, ctx = ns["PLAYERS_META"], ns["frame"], ns["ctx"]
+    rostered = set(frame["player_id"])
+    stats = ns["fetch_weekly_stats"](season, week)                     # already downloaded by the run cell (cached)
+    played = {pid for wk in range(1, week) for pid, rec in stats.get(wk, {}).items() if rec["gp"] > 0 or rec["pts"] != 0}
+    norm, name_of = ns["normalize_name_for_match"], ns["player_display_name"]
+    adp_names = set(ctx["adp_map"])
+    pool = []
+    for pid, info in meta.items():
+        pos = info.get("position")
+        if pos not in ns["FANTASY_POSITIONS"] or pid in rostered or not info.get("team") or info.get("active") is False:
+            continue
+        if pos in ("DEF", "K") or pid in played or norm(name_of(pid)) in adp_names:
+            pool.append(pid)
+    if not pool:
+        return 0
+    fa = ns["build_free_agent_rows"](pool, ctx, 0, "")
+    fa = ns["add_projection"](fa, week, ctx["bye"], ctx["apply_availability"])
+    for r in fa.itertuples():
+        payload["players"][r.player_id] = {
+            "name": r.player_name, "position": r.position, "team": r.nfl_team, "roster_id": 0, "owner": "",
+            "projected_points": round(float(r.projected_points), 3), "raw_projection": round(float(r.raw_projection), 3),
+            "availability": r.availability_flag or "", "injury_status": r.injury_status if isinstance(r.injury_status, str) else "",
+            "starter_at_export": 0, "free_agent": True}
+    return len(fa)
 
 
 def validate_run(ns, season, week, payload):
@@ -163,6 +196,11 @@ def refresh():
         payload = json.load(open(made, encoding="utf-8"))
         payload["generated_epoch"] = time.time()         # timezone-proof timestamp for the page's freshness check
         validate_run(ns, season, week, payload)
+        try:
+            n_pool = add_free_agent_pool(ns, payload, season, week)
+        except Exception:
+            n_pool = 0
+            log("WARNING: free-agent pool skipped (rostered players are still projected):\n" + traceback.format_exc(limit=3))
         tmp_final = final_path + ".tmp"
         with open(tmp_final, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
@@ -176,7 +214,8 @@ def refresh():
         os.chdir(cwd)
         remove_tree(work)
         atexit.register(remove_tree, work)               # Windows can keep a folder busy while this process lives: retry at exit
-    log(f"OK {season} wk{week} in {time.time() - t0:.0f}s: " + (summarize_changes(old, payload) if old else f"{len(payload['players'])} players (first export)"))
+    log(f"OK {season} wk{week} in {time.time() - t0:.0f}s (+{n_pool} free agents projected): "
+        + (summarize_changes(old, payload) if old else f"{len(payload['players'])} players (first export)"))
     return 0
 
 

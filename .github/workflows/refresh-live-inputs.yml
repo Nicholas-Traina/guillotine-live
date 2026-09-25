@@ -1,12 +1,14 @@
 name: refresh-live-inputs
 
-# Rebuilds the model projections (rosters, injuries, pickups) and commits them, so the hosted page stays current.
-# GitHub runs scheduled workflows on a best-effort queue: delays of 5-30+ minutes are normal.
-# Free minutes: unlimited for public repos; private repos get a monthly allowance (each run takes ~2-3 minutes),
-# so for a private repo narrow the schedule (e.g. only game days: "17 * * * 0,1,4,6").
+# Rebuilds the model projections (every rostered player plus a pool of free agents) and commits them, so the hosted page
+# stays current. Projections only change once a day; live scores and lineups are read live by the page itself.
+#
+# Primary: the owner's PC runs refresh_and_push.py at 11:00 AM Central. This scheduled run is the BACKUP for when that PC
+# is off: it skips itself if the projections were already refreshed in the last 90 minutes.
+# GitHub cron is UTC and best-effort (delays and dropped runs happen): 16:07 UTC = 11:07 AM CDT (10:07 AM CST after Nov 1).
 on:
   schedule:
-    - cron: "17 * * * *"
+    - cron: "7 16 * * *"
   workflow_dispatch: {}          # lets you press "Run workflow" by hand in the Actions tab
   push:                          # editing the config (e.g. immune teams) or the refresh code also refreshes the projections;
     branches: [main]             # the bot's own commits (live_inputs_*.json, adp_cache) don't match these paths, so no loop
@@ -33,18 +35,39 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Skip the scheduled backup if the projections are already fresh
+        id: fresh
+        if: github.event_name == 'schedule'
+        run: |
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import glob, json, time
+          ages = []
+          for f in glob.glob("live_inputs_*.json"):
+              try:
+                  ages.append((time.time() - json.load(open(f))["generated_epoch"]) / 60)
+              except Exception:
+                  pass
+          age = min(ages) if ages else 1e9
+          print("skip=" + ("true" if age < 90 else "false"))
+          print(f"age_minutes={age:.0f}")
+          PY
+
       - uses: actions/setup-python@v7
+        if: steps.fresh.outputs.skip != 'true'
         with:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements-refresh.txt
 
       - run: pip install -r requirements-refresh.txt
+        if: steps.fresh.outputs.skip != 'true'
 
       - name: Rebuild projections
+        if: steps.fresh.outputs.skip != 'true'
         run: python refresh_live_inputs.py
 
       - name: Commit updated projections
+        if: steps.fresh.outputs.skip != 'true'
         run: |
           git config user.name "refresh-bot"
           git config user.email "refresh-bot@users.noreply.github.com"
