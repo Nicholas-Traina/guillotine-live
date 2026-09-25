@@ -62,7 +62,7 @@ def banner_html(lines):
     sp, wp = float(lines.get("safe_pct", 95)), float(lines.get("win_pct", 50))
     return (f'<div class="gbn">'
             f'<div title="A score above this beats the elimination cut line in {sp:g}% of simulations"><small>Safe score · {sp:g}%</small><b>{num(lines.get("safe"))}</b></div>'
-            f'<div title="A score of this wins the week in {wp:g}% of simulations"><small>Winning score · {wp:g}%</small><b>{num(lines.get("winning"))}</b></div></div>')
+            f'<div title="0.1 above the runner-up score in the median simulation: a score above this would have won the week in {wp:g}% of simulations"><small>Winning score · {wp:g}%</small><b>{num(lines.get("winning"))}</b></div></div>')
 
 
 def _bar(label, pct, cls):

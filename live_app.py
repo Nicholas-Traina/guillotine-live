@@ -92,7 +92,7 @@ proj_keys = list(gl.PROJECTION_LABELS)
 projection = st.sidebar.selectbox("Projection", proj_keys, index=proj_keys.index(cfg["projection_source"]),
                                   format_func=lambda key: gl.PROJECTION_LABELS[key], key=f"proj_{cfg['projection_source']}",
                                   help="Which projection drives the expected finals and odds. Set the default for everyone in live_config.json.")
-show_banner = st.sidebar.checkbox("Show score banner", value=True, help="Keeps the safe score (beats the elimination line in 95% of simulations) and the winning score (wins in 50%) at the top of the page.")
+show_banner = st.sidebar.checkbox("Show score banner", value=True, help="Keeps the safe score (beats the elimination line in 95% of simulations) and the winning score (0.1 above the runner-up in the median simulation) at the top of the page.")
 season = st.sidebar.number_input("Season", value=state["season"], step=1, format="%d")
 week = st.sidebar.number_input("Week", value=state["week"], min_value=1, max_value=18, step=1)
 refresh = st.sidebar.slider("Refresh every (seconds)", 10, 120, 30, step=5)
@@ -277,6 +277,6 @@ with st.expander("How this works"):
                 "players whose games have started stay put). "
                 "Team detail → All columns shows every player's number under each. "
                 "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
-                "The banner's **safe score** is the score that beats the elimination cut line in 95% of simulations, and the **winning score** is the score that wins the week in 50% of them (hide it in Settings). "
+                "The banner's **safe score** is the score that beats the elimination cut line in 95% of simulations, and the **winning score** is 0.1 above the runner-up score in the median simulation, i.e. the score that would have won the week in half of them (hide it in Settings). "
                 "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
                 "Ties in points are shown as T-ranks.")

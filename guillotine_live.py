@@ -575,12 +575,16 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
     return t
 
 
-def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0):
+WIN_MARGIN = 0.1        # the winning score is this far above the runner-up's score
+
+
+def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0, win_margin=WIN_MARGIN):
     """
     Two scores to aim for this week, from the same simulation as the odds:
       safe     the score that beats the elimination cut line in `safe_pct`% of simulations. The cut line is the score of the last team cut
                (the k-th lowest among teams that can be cut; immune teams are not cut), so a team above `safe` survives that often.
-      winning  the score that wins the week (the top score) in `win_pct`% of simulations, i.e. the median of the winning score.
+      winning  the score that would have won the week in `win_pct`% of simulations: the runner-up's score (the second highest of the week, so a
+               team above it beats everyone else) plus `win_margin`. Its median across the simulations at the default 50%.
     Returns {"safe": float or None, "winning": float, "safe_pct": ..., "win_pct": ...}; safe is None if nobody can be cut.
     """
     t = teams.reset_index(drop=True)
@@ -597,7 +601,9 @@ def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0
     if k_eff >= 1:
         cut_line = np.partition(eligible, k_eff - 1, axis=0)[k_eff - 1]              # score of the last team cut, in each simulation
         safe = float(np.quantile(cut_line, safe_pct / 100.0))
-    return {"safe": safe, "winning": float(np.quantile(total.max(axis=0), win_pct / 100.0)), "safe_pct": safe_pct, "win_pct": win_pct}
+    runner_up = np.partition(total, T - 2, axis=0)[T - 2] if T >= 2 else total.max(axis=0)          # second-highest score in each simulation
+    winning = float(np.quantile(runner_up, win_pct / 100.0)) + (win_margin if T >= 2 else 0.0)
+    return {"safe": safe, "winning": winning, "safe_pct": safe_pct, "win_pct": win_pct}
 
 
 def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000, projection=None):
