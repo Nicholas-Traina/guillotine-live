@@ -204,16 +204,17 @@ def refresh():
             n_pool = 0
             log("WARNING: free-agent pool skipped (rostered players are still projected):\n" + traceback.format_exc(limit=3))
         rule_note = ""
-        try:                                              # owner's rule: Sleeper's projection instead of the model's for low projections
+        try:                                              # owner's rule: model for players averaging > 2 return pts/game this season, else Sleeper
             scoring = ns["get_league_scoring"](season)
             sleeper = sp.fetch_sleeper_projections(season, week)
             if sp.usable_count(sleeper) < 300 or not scoring:
                 raise RuntimeError(f"Sleeper projections unavailable ({sp.usable_count(sleeper)} players with points) or league scoring missing")
-            ret = sp.return_points_per_game(ns["_WEEKLY_STATS_CACHE"], scoring, season, week)
+            ret = sp.return_points_per_game_so_far(ns["_WEEKLY_STATS_CACHE"], scoring, season, week)
             counts = sp.apply_rule(payload["players"], sleeper, scoring, ret)
             n_start = sum(1 for v in payload["players"].values() if v.get("projection_source") == "sleeper" and v.get("starter_at_export"))
-            payload["projection_rule"] = {"sleeper_below": sp.SLEEPER_BELOW, "return_pts_per_game": sp.RETURN_PTS_PER_GAME,
-                                          "history_seasons": sp.HISTORY_SEASONS, **counts}
+            payload["projection_rule"] = {"rule": f"model if the player averages more than {sp.RETURN_PPG_THRESHOLD:g} return-yardage points per game "
+                                                  "so far this season, else Sleeper (model when Sleeper has no projection; bye / Out / IR stay 0)",
+                                          "return_ppg_threshold": sp.RETURN_PPG_THRESHOLD, **counts}
             rule_note = (f" | Sleeper projection used for {counts['sleeper']} players ({n_start} starters at export), "
                          f"{counts['returner_kept_model']} returners kept on the model")
         except Exception:

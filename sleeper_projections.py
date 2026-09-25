@@ -1,19 +1,19 @@
 """
-Sleeper's own projections, scored with THIS league's rules, and the rule that decides when to use them instead of the model.
+Sleeper's own projections, scored with THIS league's rules, and the rule that decides which projection the page uses.
 
-Rule (set by the league owner): if Sleeper projects a player below 8 points AND the player has no history of averaging more than
-3 points per game from return yardage, use Sleeper's number instead of the model's. Returners are exempt because Sleeper's
-projections barely include return yardage (punt-return yards for a few dozen players, no kick-return yards) while the league
-scores it (0.1 pt per return yard).
+Rule (chosen by the league owner after a backtest on 2024-2026): use the MODEL for any player who averages MORE than 2 points per
+game from return yardage so far this season (kick + punt return yards x the league's 0.1 pt per yard, over the games he has played
+in completed weeks), and SLEEPER's projection for everyone else. Sleeper barely projects return yardage (punt-return yards for a
+few dozen players, no kick-return yards) while this league scores it, so for real returners the model is the better guide; for
+everyone else Sleeper was more accurate than the model. Players Sleeper has no projection for stay on the model, and players on a
+bye or listed Out / IR stay at 0.
 """
 import time
 
 import requests
 
 URL = "https://api.sleeper.app/v1/projections/nfl/regular/{season}/{week}"
-SLEEPER_BELOW = 8.0          # use Sleeper when its projection is below this many points ...
-RETURN_PTS_PER_GAME = 3.0    # ... unless the player averages MORE than this many return-yardage points per game
-HISTORY_SEASONS = 2          # return history = the previous season plus this season so far
+RETURN_PPG_THRESHOLD = 2.0     # model if he averages MORE than this many return-yardage points per game so far this season
 
 
 def fetch_sleeper_projections(season, week, retries=3):
@@ -44,38 +44,41 @@ def league_projection(stats, scoring):
     return sum(float(stats[k]) * w for k, w in scoring.items() if w and stats.get(k) is not None)
 
 
-def return_points_per_game(weekly_stats_cache, scoring, season, week, history_seasons=HISTORY_SEASONS):
+def return_points_per_game_so_far(weekly_stats_cache, scoring, season, week):
     """
-    {player_id: average return-yardage points per game played}, over the previous season(s) and this season's completed weeks.
-    weekly_stats_cache is the pipeline's {(year, max_weeks): {week: {player_id: {gp, kr_yd, pr_yd, ...}}}}.
+    {player_id: return-yardage points per game played}, over this season's completed weeks (weeks before `week`).
+    A game counts if he played (gp > 0) or had any return yards. weekly_stats_cache is the pipeline's
+    {(year, max_weeks): {week: {player_id: {gp, kr_yd, pr_yd, ...}}}}. In week 1 nothing has been played, so the result is empty.
     """
     w_kr, w_pr = float(scoring.get("kr_yd", 0) or 0), float(scoring.get("pr_yd", 0) or 0)
-    best = {}                                             # per year, the cached download that covers the most weeks
+    best = None
     for (year, max_weeks), weeks in weekly_stats_cache.items():
-        if season - history_seasons + 1 <= year <= season and (year not in best or max_weeks > best[year][0]):
-            best[year] = (max_weeks, weeks)
+        if year == season and (best is None or max_weeks > best[0]):
+            best = (max_weeks, weeks)
     pts, games = {}, {}
-    for year, (_, weeks) in best.items():
-        for wk, players in weeks.items():
-            if year == season and wk >= week:             # only weeks already played
+    if best is None:
+        return {}
+    for wk, players in best[1].items():
+        if wk >= week:
+            continue
+        for pid, rec in players.items():
+            if not (rec.get("gp", 0) > 0 or rec.get("kr_yd", 0) or rec.get("pr_yd", 0)):
                 continue
-            for pid, rec in players.items():
-                if not (rec.get("gp", 0) > 0 or rec.get("kr_yd", 0) or rec.get("pr_yd", 0)):
-                    continue
-                games[pid] = games.get(pid, 0) + 1
-                pts[pid] = pts.get(pid, 0.0) + w_kr * rec.get("kr_yd", 0) + w_pr * rec.get("pr_yd", 0)
+            games[pid] = games.get(pid, 0) + 1
+            pts[pid] = pts.get(pid, 0.0) + w_kr * rec.get("kr_yd", 0) + w_pr * rec.get("pr_yd", 0)
     return {pid: pts[pid] / games[pid] for pid in games}
 
 
-def use_sleeper(sleeper_pts, return_pts_pg, available=True, below=SLEEPER_BELOW, ret_threshold=RETURN_PTS_PER_GAME):
-    """The owner's rule. Unavailable players (bye / Out / IR) stay at 0 whatever either projection says."""
-    return bool(available and sleeper_pts is not None and sleeper_pts < below and return_pts_pg <= ret_threshold)
+def use_sleeper(sleeper_pts, return_ppg, available=True, threshold=RETURN_PPG_THRESHOLD):
+    """The owner's rule: Sleeper's projection unless the player averages more than `threshold` return points per game this
+    season (or has no Sleeper projection). Unavailable players (bye / Out / IR) are never switched."""
+    return bool(available and sleeper_pts is not None and not return_ppg > threshold)
 
 
-def apply_rule(players, sleeper, scoring, return_pts_pg, below=SLEEPER_BELOW, ret_threshold=RETURN_PTS_PER_GAME):
+def apply_rule(players, sleeper, scoring, return_ppg, threshold=RETURN_PPG_THRESHOLD):
     """
     Update an export's players dict in place. Each player gets: model_projection (what the model said, incl. bye / injury
-    zeroing), sleeper_projection (league-scored, or None), return_pts_pg, projection_source ('sleeper' | 'model'), and
+    zeroing), sleeper_projection (league-scored, or None), return_ppg_so_far, projection_source ('sleeper' | 'model'), and
     projected_points = the value the page uses. Returns counts for the log.
     """
     counts = {"players": 0, "sleeper": 0, "model": 0, "no_sleeper_projection": 0, "returner_kept_model": 0}
@@ -83,11 +86,12 @@ def apply_rule(players, sleeper, scoring, return_pts_pg, below=SLEEPER_BELOW, re
         counts["players"] += 1
         model = float(p["projected_points"])
         sp = league_projection(sleeper.get(pid), scoring)
-        ret = float(return_pts_pg.get(pid, 0.0))
+        ppg = float(return_ppg.get(pid, 0.0))
+        available = p.get("availability", "") == ""
         p["model_projection"] = round(model, 3)
         p["sleeper_projection"] = None if sp is None else round(sp, 3)
-        p["return_pts_pg"] = round(ret, 2)
-        if use_sleeper(sp, ret, available=(p.get("availability", "") == ""), below=below, ret_threshold=ret_threshold):
+        p["return_ppg_so_far"] = round(ppg, 2)
+        if use_sleeper(sp, ppg, available, threshold):
             p["projected_points"] = round(sp, 3)
             p["projection_source"] = "sleeper"
             counts["sleeper"] += 1
@@ -97,6 +101,6 @@ def apply_rule(players, sleeper, scoring, return_pts_pg, below=SLEEPER_BELOW, re
             counts["model"] += 1
             if sp is None:
                 counts["no_sleeper_projection"] += 1
-            elif sp < below and ret > ret_threshold and p.get("availability", "") == "":
+            elif ppg > threshold and available:
                 counts["returner_kept_model"] += 1
     return counts
