@@ -8,6 +8,14 @@ on:
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch: {}          # lets you press "Run workflow" by hand in the Actions tab
+  push:                          # editing the config (e.g. immune teams) or the refresh code also refreshes the projections;
+    branches: [main]             # the bot's own commits (live_inputs_*.json, adp_cache) don't match these paths, so no loop
+    paths:
+      - live_config.json
+      - refresh_live_inputs.py
+      - guillotine_live.py
+      - "Guillotine Week Projection 5.ipynb"
+      - .github/workflows/refresh-live-inputs.yml
 
 permissions:
   contents: write
