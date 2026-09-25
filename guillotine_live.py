@@ -276,12 +276,19 @@ def starter_table(matchup, inputs, games):
         f = g["fraction_left"] if g else 0.0                   # no game this week (bye) -> nothing left to play
         proj = float(info.get("projected_points") or 0.0)
         sig = float(sigma.get(info.get("position"), global_sigma))
+        exp_rem = f * proj
+        flag = info.get("availability", "")
+        if info.get("position") == "DEF" and g and g["state"] == "in":
+            # Defense scores in steps (points / yards allowed) that move down as well as up, so prorating a projection
+            # doesn't fit: while the game is on, expected final = current. The +/- still shrinks with time left.
+            exp_rem = 0.0
+            flag = flag or "DEF: final = current"
         rows.append({
             "player_id": pid, "player": info["name"], "pos": info["position"], "nfl_team": team,
             "game": (g["detail"] if g else "BYE"), "state": (g["state"] if g else "bye"),
             "pts_so_far": float(pts or 0.0), "fraction_left": f, "projection": proj,
-            "expected_remaining": f * proj, "expected_final": float(pts or 0.0) + f * proj,
-            "var_remaining": (sig ** 2) * f if proj > 0 else 0.0, "flag": info.get("availability", ""),
+            "expected_remaining": exp_rem, "expected_final": float(pts or 0.0) + exp_rem,
+            "var_remaining": (sig ** 2) * f if proj > 0 else 0.0, "flag": flag,
         })
     return pd.DataFrame(rows)
 
