@@ -213,10 +213,12 @@ def refresh():
             counts = sp.apply_rule(payload["players"], sleeper, scoring, ret)
             n_start = sum(1 for v in payload["players"].values() if v.get("projection_source") == "sleeper" and v.get("starter_at_export"))
             payload["projection_rule"] = {"rule": f"model if the player averages more than {sp.RETURN_PPG_THRESHOLD:g} return-yardage points per game "
-                                                  "so far this season, else Sleeper (model when Sleeper has no projection; bye / Out / IR stay 0)",
+                                                  "so far this season, else Sleeper; a returner whose model projection is below Sleeper's gets Sleeper's plus his return "
+                                                  "points per game, so nothing is below Sleeper's (model when Sleeper has no projection; bye / Out / IR stay 0)",
                                           "return_ppg_threshold": sp.RETURN_PPG_THRESHOLD, **counts}
             rule_note = (f" | Sleeper projection used for {counts['sleeper']} players ({n_start} starters at export), "
-                         f"{counts['returner_kept_model']} returners kept on the model")
+                         f"{counts['returner_kept_model']} returners kept on the model, "
+                         f"{counts['sleeper_plus_returns']} returners raised to Sleeper + return ppg")
         except Exception:
             log("WARNING: Sleeper-projection rule skipped, model projections used for everyone:\n" + traceback.format_exc(limit=3))
         tmp_final = final_path + ".tmp"

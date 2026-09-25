@@ -253,6 +253,7 @@ live_panel()
 with st.expander("How this works"):
     st.markdown("**Projected final** = points so far + (fraction of each starter's game still to play × the model's projection). "
                 "Projections come from the model for players who average more than 2 points per game from return yardage this season (Sleeper barely counts return yardage) and from Sleeper for everyone else; "
+                "if a returner's model number is below Sleeper's, Sleeper's plus his average return points per game is used, so no projection is below Sleeper's. "
                 "'All columns' under Team detail shows both numbers. "
                 "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
                 "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "

@@ -5,8 +5,11 @@ Rule (chosen by the league owner after a backtest on 2024-2026): use the MODEL f
 game from return yardage so far this season (kick + punt return yards x the league's 0.1 pt per yard, over the games he has played
 in completed weeks), and SLEEPER's projection for everyone else. Sleeper barely projects return yardage (punt-return yards for a
 few dozen players, no kick-return yards) while this league scores it, so for real returners the model is the better guide; for
-everyone else Sleeper was more accurate than the model. Players Sleeper has no projection for stay on the model, and players on a
-bye or listed Out / IR stay at 0.
+everyone else Sleeper was more accurate than the model.
+
+The projection is never lower than Sleeper's: if a returner's model projection comes out BELOW Sleeper's, the page uses Sleeper's
+projection plus the player's average return points per game so far this season instead. Players Sleeper has no projection for stay
+on the model, and players on a bye or listed Out / IR stay at 0.
 """
 import time
 
@@ -78,10 +81,11 @@ def use_sleeper(sleeper_pts, return_ppg, available=True, threshold=RETURN_PPG_TH
 def apply_rule(players, sleeper, scoring, return_ppg, threshold=RETURN_PPG_THRESHOLD):
     """
     Update an export's players dict in place. Each player gets: model_projection (what the model said, incl. bye / injury
-    zeroing), sleeper_projection (league-scored, or None), return_ppg_so_far, projection_source ('sleeper' | 'model'), and
-    projected_points = the value the page uses. Returns counts for the log.
+    zeroing), sleeper_projection (league-scored, or None), return_ppg_so_far, projection_source ('sleeper' | 'model' |
+    'sleeper+returns') and projected_points = the value the page uses. Returns counts for the log.
+    'sleeper+returns' = a returner whose model projection was below Sleeper's: Sleeper's projection plus his return points per game.
     """
-    counts = {"players": 0, "sleeper": 0, "model": 0, "no_sleeper_projection": 0, "returner_kept_model": 0}
+    counts = {"players": 0, "sleeper": 0, "model": 0, "sleeper_plus_returns": 0, "no_sleeper_projection": 0, "returner_kept_model": 0}
     for pid, p in players.items():
         counts["players"] += 1
         model = float(p["projected_points"])
@@ -95,6 +99,10 @@ def apply_rule(players, sleeper, scoring, return_ppg, threshold=RETURN_PPG_THRES
             p["projected_points"] = round(sp, 3)
             p["projection_source"] = "sleeper"
             counts["sleeper"] += 1
+        elif sp is not None and available and ppg > threshold and model < sp:
+            p["projected_points"] = round(sp + ppg, 3)          # never below Sleeper: his projection plus what he earns from returns
+            p["projection_source"] = "sleeper+returns"
+            counts["sleeper_plus_returns"] += 1
         else:
             p["projected_points"] = round(model, 3)
             p["projection_source"] = "model"
