@@ -46,6 +46,21 @@ def fetch_matchups(league_id, week):
     return _get(f"{SLEEPER}/league/{league_id}/matchups/{week}") or []
 
 
+_SLOTS_CACHE = {}
+
+
+def fetch_roster_positions(league_id):
+    """The league's starting lineup slots in order (bench / IR / taxi removed), e.g. ['RB', 'RB', 'WR', ..., 'DEF']; None if unavailable.
+    Matches the order of a matchup's `starters` list."""
+    if league_id not in _SLOTS_CACHE:
+        try:
+            rp = _get(f"{SLEEPER}/league/{league_id}")["roster_positions"]
+            _SLOTS_CACHE[league_id] = [s for s in rp if s not in ("BN", "IR", "TAXI")]
+        except Exception:
+            return None
+    return _SLOTS_CACHE[league_id]
+
+
 def fraction_left(state, period, clock_seconds):
     """Fraction of an NFL game still to be played (regulation = 60 minutes)."""
     if state == "pre":
@@ -340,9 +355,107 @@ def _bench_by_position(matchup, players):
     return {pos: sorted(lst, key=lambda x: -x[0]) for pos, lst in out.items()}
 
 
-def starter_table(matchup, inputs, games, projection=None):
+SLOT_ELIGIBLE = {"QB": {"QB"}, "RB": {"RB"}, "WR": {"WR"}, "TE": {"TE"}, "K": {"K"}, "DEF": {"DEF"}, "FLEX": {"RB", "WR", "TE"},
+                 "WRRB_FLEX": {"RB", "WR"}, "REC_FLEX": {"WR", "TE"}, "SUPER_FLEX": {"QB", "RB", "WR", "TE"}}
+
+
+def _best_assignment(slots, pool):
+    """
+    Best lineup: which pool player fills which slot. `pool` = [(pid, position, value), ...]; a slot may stay empty (worth 0).
+    Returns {slot index: pool index} for the filled slots. Hungarian algorithm (the slots are few, so it is instant).
+    """
+    n, m = len(slots), len(pool)
+    if n == 0 or m == 0:
+        return {}
+    cols = m + n                                               # n extra zero-value 'empty' columns so every slot can be left unfilled
+    INF = 1e9
+    cost = [[0.0] * cols for _ in range(n)]
+    for i, slot in enumerate(slots):
+        ok = SLOT_ELIGIBLE.get(slot, {slot})
+        for j, (_, pos, value) in enumerate(pool):
+            cost[i][j] = -float(value) if pos in ok else INF
+    u, v, p, way = [0.0] * (n + 1), [0.0] * (cols + 1), [0] * (cols + 1), [0] * (cols + 1)
+    for i in range(1, n + 1):
+        p[0], j0 = i, 0
+        minv, used = [float("inf")] * (cols + 1), [False] * (cols + 1)
+        while True:
+            used[j0] = True
+            i0, delta, j1 = p[j0], float("inf"), 0
+            for j in range(1, cols + 1):
+                if not used[j]:
+                    cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
+                    if cur < minv[j]:
+                        minv[j], way[j] = cur, j0
+                    if minv[j] < delta:
+                        delta, j1 = minv[j], j
+            for j in range(cols + 1):
+                if used[j]:
+                    u[p[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if p[j0] == 0:
+                break
+        while j0:
+            p[j0] = p[way[j0]]
+            j0 = way[j0]
+    return {p[j] - 1: j - 1 for j in range(1, m + 1) if p[j]}
+
+
+def _ideal_replacements(rows, matchup, players, games, slots):
+    """
+    For starters Sleeper doesn't project (`rows` flagged '_lack'): assume they are unavailable and take the best possible lineup from
+    the team's remaining players, moving people between slots (a WR to FLEX / SUPER_FLEX frees a slot for someone else). Only players whose
+    games haven't started can be moved. The lineup's gain over the current projected starters is shared out over the flagged rows,
+    so the team total equals the ideal lineup (0 if nobody can fill the slot). Returns {player_id: (value, note)}; flagged players whose game
+    has started are left out (they keep the model's number).
+    """
+    starters = matchup.get("starters") or []
+
+    def locked(pid):
+        info = players.get(pid)
+        g = games.get(info.get("team")) if info else None
+        return bool(g and g["state"] in ("in", "post"))
+
+    flagged = [r for r in rows if r["_lack"] and not locked(r["player_id"])]
+    if not flagged:
+        return {}
+    flagged_ids = {r["player_id"] for r in flagged}
+    # slots that can still change: empty, or held by a player (in the export) whose game hasn't started
+    free = [i for i, pid in enumerate(starters) if pid in (None, "0") or (pid in players and not locked(pid))]
+    in_lineup = {pid for pid in starters if pid not in (None, "0")}
+    pool, seen = [], set()
+    for pid in list(matchup.get("players") or []) + list(in_lineup):
+        info = players.get(pid)
+        if pid in seen or info is None or pid in flagged_ids or info.get("availability") or locked(pid):
+            continue
+        seen.add(pid)
+        value, source = pick_projection(info, "sleeper_returns")
+        if source == "model":                                  # Sleeper doesn't project him either
+            continue
+        pool.append((pid, info["position"], value))
+    by_pid = {r["player_id"]: r for r in rows}
+    baseline = sum(by_pid[starters[i]]["projection"] for i in free if starters[i] not in (None, "0") and starters[i] in by_pid
+                   and starters[i] not in flagged_ids)
+    chosen = _best_assignment([slots[i] for i in free], pool)
+    ideal = sum(pool[j][2] for j in chosen.values())
+    promoted = [players[pool[j][0]]["name"] for j in chosen.values() if pool[j][0] not in in_lineup]
+    gain = ideal - baseline
+    weights = [max(float(r["_model"] or 0.0), 0.0) for r in flagged]
+    total_w = sum(weights)
+    shares = [(w / total_w if total_w else 1.0 / len(flagged)) * gain for w in weights]
+    him = "him" if len(flagged) == 1 else "them"
+    note = (f"* Sleeper has no projection: the ideal lineup without {him} starts {', '.join(promoted)} (team +{gain:.1f})" if promoted
+            else f"* Sleeper has no projection and nobody on the roster can take {'his' if len(flagged) == 1 else 'their'} slot: counting 0")
+    return {r["player_id"]: (share, note) for r, share in zip(flagged, shares)}
+
+
+def starter_table(matchup, inputs, games, projection=None, slots=None):
     """One row per starter of one team: points so far, game state, expected remaining and expected final.
-    `projection` is 'sleeper_returns' | 'sleeper' | 'model' (default: DEFAULT_PROJECTION)."""
+    `projection` is 'sleeper_returns' | 'sleeper' | 'model' (default: DEFAULT_PROJECTION).
+    `slots` = the league's starting slots in order (fetch_roster_positions); lets a starter Sleeper doesn't project be replaced by the best
+    possible lineup, otherwise (None) by the best bench player at his position."""
     players = inputs["players"]
     sigma = inputs["sigma_by_position"]
     global_sigma = inputs.get("global_rmse", 7.5)
@@ -351,7 +464,8 @@ def starter_table(matchup, inputs, games, projection=None):
     starters = matchup.get("starters") or []
     pts_list = matchup.get("starters_points") or [0.0] * len(starters)
     use_bench = (projection if projection in PROJECTION_LABELS else DEFAULT_PROJECTION) == "sleeper_returns"
-    bench = _bench_by_position(matchup, players) if use_bench else {}
+    use_slots = bool(slots) and len(slots) == len(starters)
+    bench = _bench_by_position(matchup, players) if use_bench and not use_slots else {}
     for pid, pts in zip(starters, pts_list):
         if pid in (None, "0"):
             continue
@@ -365,7 +479,8 @@ def starter_table(matchup, inputs, games, projection=None):
         proj, source = pick_projection(info, projection)
         name = info["name"]
         note = ""
-        if use_bench and _lacks_sleeper_projection(info):
+        lack = use_bench and _lacks_sleeper_projection(info)
+        if lack and not use_slots:
             # Sleeper doesn't project him (injury doubt, a lost job, a returning starter ...): count the best bench player at his position instead
             queue = bench.get(info.get("position"), [])
             if queue:
@@ -375,6 +490,8 @@ def starter_table(matchup, inputs, games, projection=None):
             else:
                 note = f"* Sleeper has no projection and no bench {info.get('position')}: using the model ({proj:.1f})"
             name += "*"
+        elif lack:
+            name += "*"                                        # value and note are filled in below, once the ideal lineup is known
         sig = float(sigma.get(info.get("position"), global_sigma))
         exp_rem = f * proj
         flag = info.get("availability", "") or note
@@ -392,11 +509,24 @@ def starter_table(matchup, inputs, games, projection=None):
             "source": source, "model_projection": info.get("model_projection", info.get("projected_points")),
             "sleeper_projection": info.get("sleeper_projection"), "return_pts": info.get("return_pts_projection"),
             "sleeper_plus_returns": info.get("sleeper_plus_returns"),
+            "_lack": bool(lack and use_slots), "_model": info.get("model_projection", info.get("projected_points")),
         })
+    if use_slots and any(r["_lack"] for r in rows):
+        fixes = _ideal_replacements(rows, matchup, players, games, slots)
+        for r in rows:
+            if r["player_id"] in fixes:
+                value, note = fixes[r["player_id"]]
+                f = r["fraction_left"]
+                r.update(projection=value, source="replacement", flag=note, expected_remaining=f * value,
+                         expected_final=r["pts_so_far"] + f * value, var_remaining=(float(sigma.get(r["pos"], global_sigma)) ** 2) * f if value > 0 else 0.0)
+            elif r["_lack"] and r["state"] in ("in", "post"):
+                r["flag"] = f"* Sleeper has no projection and his game is under way: using the model ({r['projection']:.1f})"
+    for r in rows:
+        r.pop("_lack", None); r.pop("_model", None)
     return pd.DataFrame(rows)
 
 
-def live_team_table(matchups, inputs, games, projection=None):
+def live_team_table(matchups, inputs, games, projection=None, slots=None):
     """One row per live team (teams with an empty roster were already eliminated)."""
     owners = inputs["owners"]
     out, details = [], {}
@@ -404,7 +534,7 @@ def live_team_table(matchups, inputs, games, projection=None):
         if not m.get("players"):
             continue
         rid = m["roster_id"]
-        st = starter_table(m, inputs, games, projection)
+        st = starter_table(m, inputs, games, projection, slots)
         details[rid] = st
         cur = float(m.get("points") or 0.0)
         mu = float(st["expected_remaining"].sum()) if len(st) else 0.0
@@ -446,7 +576,7 @@ def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_s
     """Everything the page needs in one call."""
     matchups = fetch_matchups(league_id, week)
     games, clock = fetch_game_states_detailed(season, week)
-    teams, details = live_team_table(matchups, inputs, games, projection)
+    teams, details = live_team_table(matchups, inputs, games, projection, fetch_roster_positions(league_id))
     if k is None:
         k = int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
     standings = simulate_standings(teams, k, immune_owners, n_sims)
