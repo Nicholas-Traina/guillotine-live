@@ -578,20 +578,22 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
 WIN_MARGIN = 0.1        # the winning score is this far above the runner-up's score
 
 
-def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0, win_margin=WIN_MARGIN, owner=None):
+def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0, win_margin=WIN_MARGIN, owner=None, mid_pct=50.0):
     """
-    Two scores a team can aim for this week, from the same simulation as the odds. They depend on WHICH team you are, because your own score
+    Scores a team can aim for this week, from the same simulation as the odds. They depend on WHICH team you are, because your own score
     isn't one of the scores you have to beat, so pass `owner` (a team's name, any capitalisation):
-      safe     the score that keeps `owner` out of the cut in `safe_pct`% of simulations: it beats the elimination cut line, the k-th lowest
-               score among the OTHER teams that can be cut (immune teams can't be cut). None if `owner` is immune or can't be safe.
+      safe / safe_mid  the score that beats the elimination cut line in `safe_pct`% / `mid_pct`% of simulations. The cut line is the k-th lowest
+               score among the teams that can be cut (not immune), other than the owner. For a team that can be cut, beating it means staying
+               out of the cut; for an IMMUNE team it means keeping its immunity (finishing above the team that would be cut).
+               None if there are fewer than k such teams.
       winning  the score that beats every other team in `win_pct`% of simulations (the median of the best other team's score), plus
                `win_margin` so it is a beat rather than a tie.
     With owner=None it gives the numbers for an extra team competing against the whole field (all teams' cut line and top score).
-    Returns {"owner", "safe", "winning", "safe_pct", "win_pct", "immune"}; safe/winning are None when they can't be computed (unknown owner).
+    Returns {"owner", "safe", "safe_mid", "winning", "safe_pct", "mid_pct", "win_pct", "immune"}; None where it can't be computed.
     """
     t = teams.sort_values("owner", key=lambda c: c.str.lower(), kind="stable").reset_index(drop=True)      # same draws per team however the table is sorted
     T = len(t)
-    out = {"owner": owner, "safe": None, "winning": None, "safe_pct": safe_pct, "win_pct": win_pct, "immune": False}
+    out = {"owner": owner, "safe": None, "safe_mid": None, "winning": None, "safe_pct": safe_pct, "mid_pct": mid_pct, "win_pct": win_pct, "immune": False}
     if T == 0:
         return out
     rng = np.random.default_rng(seed)
@@ -610,9 +612,10 @@ def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0
         return out
     out["winning"] = float(np.quantile(total[others].max(axis=0), win_pct / 100.0)) + win_margin
     eligible = total[others & ~immune]                                              # the scores that can be cut, other than the owner's
-    if not out["immune"] and 1 <= k <= eligible.shape[0]:
+    if 1 <= k <= eligible.shape[0]:
         cut_line = np.partition(eligible, int(k) - 1, axis=0)[int(k) - 1]          # score of the last team cut, in each simulation
         out["safe"] = float(np.quantile(cut_line, safe_pct / 100.0))
+        out["safe_mid"] = float(np.quantile(cut_line, mid_pct / 100.0))
     return out
 
 

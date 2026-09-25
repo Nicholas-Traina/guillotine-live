@@ -18,15 +18,15 @@ button[data-testid="stExpandSidebarButton"]::after { content: "Settings"; font-s
 [data-testid="stSidebarCollapseButton"] button::after { content: "Hide"; font-size: .85rem; font-weight: 600; color: inherit; }
 /* score banner: stays at the top while the page scrolls (sticky, so it also works inside Streamlit's layout) */
 div[data-testid="stElementContainer"]:has(.gbn) { position: sticky; top: 3.75rem; z-index: 990; }
-.gbn { display: flex; justify-content: space-around; gap: .6rem; padding: .35rem .6rem; border-radius: 0 0 10px 10px; border: 1px solid rgba(128,128,128,.45); border-top: 0;
+.gbn { display: flex; flex-direction: column; gap: .05rem; padding: .3rem .6rem .35rem; border-radius: 0 0 10px 10px; border: 1px solid rgba(128,128,128,.45); border-top: 0;
        background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(0,0,0,.12); backdrop-filter: blur(6px); }
 @media (prefers-color-scheme: dark) { .gbn { background: rgba(14,17,23,.94); } }
-.gbn div { display: flex; flex-direction: column; align-items: center; min-width: 0; text-align: center; }
-.gbn b { font-size: 1.35rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.gbn .gbo { flex: 0 1 30%; font-size: .78rem; font-weight: 700; justify-content: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; line-height: 2.4; }
+.gbn .gbr { display: flex; justify-content: space-around; gap: .5rem; }
+.gbn .gbr div { display: flex; flex-direction: column; align-items: center; min-width: 0; text-align: center; }
+.gbn b { font-size: 1.25rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.gbn .gbo { font-size: .75rem; font-weight: 700; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }
 .gbn .gbp { font-size: .82rem; text-align: center; padding: .3rem 0; } .gbn .gbp b { font-size: inherit; }
-.gbn b.gbs { font-size: .95rem; padding: .3rem 0; }
-.gbn small { opacity: .7; font-size: .68rem; line-height: 1.15; }
+.gbn small { opacity: .7; font-size: .66rem; line-height: 1.15; white-space: nowrap; }
 .gg { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: .7rem; margin: .25rem 0 1rem; }
 .gc { --c: rgba(128,128,128,.5); position: relative; overflow: hidden; border: 1px solid rgba(128,128,128,.35); border-radius: 10px;
       padding: .7rem .85rem .7rem calc(.85rem + 6px); background: rgba(128,128,128,.07); }
@@ -57,19 +57,24 @@ div[data-testid="stElementContainer"]:has(.gbn) { position: sticky; top: 3.75rem
 
 
 def banner_html(lines):
-    """Sticky banner with one team's safe score and winning score. `lines` is guillotine_live.score_lines(owner=...); '' if unavailable."""
+    """Sticky banner for one team: its safe scores (50% and 95%) and its winning score. `lines` is guillotine_live.score_lines(owner=...);
+    '' if unavailable. For an immune team the safe scores are the scores that keep its immunity."""
     if not lines or lines.get("winning") is None:
         return ""
-    sp, wp = float(lines.get("safe_pct", 95)), float(lines.get("win_pct", 50))
+    sp, mp, wp = (float(lines.get(x, d)) for x, d in (("safe_pct", 95), ("mid_pct", 50), ("win_pct", 50)))
     who = html.escape(str(lines.get("owner") or ""))
-    if lines.get("immune"):
-        safe = '<b class="gbs">immune</b>'
-    else:
-        safe = f'<b>{"–" if lines.get("safe") is None else format(float(lines["safe"]), ".1f")}</b>'
-    return (f'<div class="gbn"><div class="gbo" title="{who}">★ {who}</div>'
-            f'<div title="{who}: a score above this keeps you out of the elimination spots in {sp:g}% of simulations"><small>Safe score · {sp:g}%</small>{safe}</div>'
-            f'<div title="{who}: 0.1 above the best other team in the median simulation, a score that beats every other team in {wp:g}% of simulations">'
-            f'<small>Winning score · {wp:g}%</small><b>{float(lines["winning"]):.1f}</b></div></div>')
+    imm = bool(lines.get("immune"))
+    word = "Keeps immunity" if imm else "Safe score"
+    what = "keeps your immunity (beats the elimination line)" if imm else "keeps you out of the elimination spots"
+    def num(v):
+        return "–" if v is None else format(float(v), ".1f")
+    def item(label, value, tip):
+        return f'<div title="{who}: {tip}"><small>{label}</small><b>{num(value)}</b></div>'
+    return (f'<div class="gbn"><div class="gbo">★ {who}{" 🛡" if imm else ""}</div><div class="gbr">'
+            + item(f"{word} · {mp:g}%", lines.get("safe_mid"), f"a score above this {what} in {mp:g}% of simulations")
+            + item(f"{word} · {sp:g}%", lines.get("safe"), f"a score above this {what} in {sp:g}% of simulations")
+            + item(f"Winning score · {wp:g}%", lines["winning"], f"0.1 above the best other team in the median simulation: beats every other team in {wp:g}% of simulations")
+            + '</div></div>')
 
 
 def banner_prompt_html():
