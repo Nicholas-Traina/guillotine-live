@@ -16,6 +16,14 @@ button[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButt
     display: inline-flex !important; align-items: center; gap: .2rem; }
 button[data-testid="stExpandSidebarButton"]::after { content: "Settings"; font-size: .85rem; font-weight: 600; color: inherit; }
 [data-testid="stSidebarCollapseButton"] button::after { content: "Hide"; font-size: .85rem; font-weight: 600; color: inherit; }
+/* score banner: stays at the top while the page scrolls (sticky, so it also works inside Streamlit's layout) */
+div[data-testid="stElementContainer"]:has(.gbn) { position: sticky; top: 3.75rem; z-index: 990; }
+.gbn { display: flex; justify-content: space-around; gap: .6rem; padding: .35rem .6rem; border-radius: 0 0 10px 10px; border: 1px solid rgba(128,128,128,.45); border-top: 0;
+       background: rgba(255,255,255,.94); box-shadow: 0 2px 8px rgba(0,0,0,.12); backdrop-filter: blur(6px); }
+@media (prefers-color-scheme: dark) { .gbn { background: rgba(14,17,23,.94); } }
+.gbn div { display: flex; flex-direction: column; align-items: center; min-width: 0; text-align: center; }
+.gbn b { font-size: 1.35rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.gbn small { opacity: .7; font-size: .68rem; line-height: 1.15; }
 .gg { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: .7rem; margin: .25rem 0 1rem; }
 .gc { --c: rgba(128,128,128,.5); position: relative; overflow: hidden; border: 1px solid rgba(128,128,128,.35); border-radius: 10px;
       padding: .7rem .85rem .7rem calc(.85rem + 6px); background: rgba(128,128,128,.07); }
@@ -43,6 +51,18 @@ button[data-testid="stExpandSidebarButton"]::after { content: "Settings"; font-s
   .gc { padding: .6rem .7rem .6rem calc(.7rem + 6px); }
 }
 </style>"""
+
+
+def banner_html(lines):
+    """Sticky banner with the safe score and the winning score. `lines` is guillotine_live.score_lines(); '' if it isn't available."""
+    if not lines or lines.get("winning") is None:
+        return ""
+    def num(v):
+        return "–" if v is None else f"{float(v):.1f}"
+    sp, wp = float(lines.get("safe_pct", 95)), float(lines.get("win_pct", 50))
+    return (f'<div class="gbn">'
+            f'<div title="A score above this beats the elimination cut line in {sp:g}% of simulations"><small>Safe score · {sp:g}%</small><b>{num(lines.get("safe"))}</b></div>'
+            f'<div title="A score of this wins the week in {wp:g}% of simulations"><small>Winning score · {wp:g}%</small><b>{num(lines.get("winning"))}</b></div></div>')
 
 
 def _bar(label, pct, cls):

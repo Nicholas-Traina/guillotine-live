@@ -575,6 +575,31 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
     return t
 
 
+def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0):
+    """
+    Two scores to aim for this week, from the same simulation as the odds:
+      safe     the score that beats the elimination cut line in `safe_pct`% of simulations. The cut line is the score of the last team cut
+               (the k-th lowest among teams that can be cut; immune teams are not cut), so a team above `safe` survives that often.
+      winning  the score that wins the week (the top score) in `win_pct`% of simulations, i.e. the median of the winning score.
+    Returns {"safe": float or None, "winning": float, "safe_pct": ..., "win_pct": ...}; safe is None if nobody can be cut.
+    """
+    t = teams.reset_index(drop=True)
+    T = len(t)
+    if T == 0:
+        return {"safe": None, "winning": None, "safe_pct": safe_pct, "win_pct": win_pct}
+    rng = np.random.default_rng(seed)
+    Z = rng.standard_normal((T, n_sims))
+    total = t["current"].values[:, None] + np.maximum(t["expected_remaining"].values[:, None] + t["sd_remaining"].values[:, None] * Z, 0.0)
+    immune = t["owner"].str.lower().isin({u.lower() for u in immune_owners}).values
+    eligible = total[~immune]
+    k_eff = int(min(k, eligible.shape[0]))
+    safe = None
+    if k_eff >= 1:
+        cut_line = np.partition(eligible, k_eff - 1, axis=0)[k_eff - 1]              # score of the last team cut, in each simulation
+        safe = float(np.quantile(cut_line, safe_pct / 100.0))
+    return {"safe": safe, "winning": float(np.quantile(total.max(axis=0), win_pct / 100.0)), "safe_pct": safe_pct, "win_pct": win_pct}
+
+
 def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000, projection=None):
     """Everything the page needs in one call."""
     matchups = fetch_matchups(league_id, week)
@@ -584,6 +609,7 @@ def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_s
         k = int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
     standings = simulate_standings(teams, k, immune_owners, n_sims)
     return {"standings": standings, "details": details, "games": games, "k": k, "projection": projection or DEFAULT_PROJECTION,
+            "lines": score_lines(teams, k, immune_owners, n_sims),
             "clock_source": clock["source"], "clock_estimated": clock["estimated"], "clock_attempts": clock["attempts"],
             "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"), "fetched_epoch": time.time(),
             "fetched_central": format_central(time.time())}
