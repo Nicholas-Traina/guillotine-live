@@ -92,7 +92,7 @@ proj_keys = list(gl.PROJECTION_LABELS)
 projection = st.sidebar.selectbox("Projection", proj_keys, index=proj_keys.index(cfg["projection_source"]),
                                   format_func=lambda key: gl.PROJECTION_LABELS[key], key=f"proj_{cfg['projection_source']}",
                                   help="Which projection drives the expected finals and odds. Set the default for everyone in live_config.json.")
-show_banner = st.sidebar.checkbox("Show score banner", value=True, help="Keeps the safe score (beats the elimination line in 95% of simulations) and the winning score (0.1 above the runner-up in the median simulation) at the top of the page.")
+show_banner = st.sidebar.checkbox("Show score banner", value=True, help="Keeps your team's safe score (beats the elimination line in 95% of simulations) and winning score (beats every other team in half of them) at the top of the page. Pick your team under My team.")
 season = st.sidebar.number_input("Season", value=state["season"], step=1, format="%d")
 week = st.sidebar.number_input("Week", value=state["week"], min_value=1, max_value=18, step=1)
 refresh = st.sidebar.slider("Refresh every (seconds)", 10, 120, 30, step=5)
@@ -164,9 +164,12 @@ def live_panel():
     s = s.sort_values(cols_, ascending=asc).reset_index(drop=True)
 
     if show_banner:
-        banner = live_cards.banner_html(snap.get("lines"))
-        if banner:
-            st.markdown(banner, unsafe_allow_html=True)
+        if my_team == "-":
+            st.markdown(live_cards.banner_prompt_html(), unsafe_allow_html=True)
+        else:
+            lines = gl.score_lines(s, snap["k"], list(s.loc[s["immune"], "owner"]), n_sims, owner=my_team)       # depends on which team you are
+            banner = live_cards.banner_html(lines)
+            st.markdown(banner or live_cards.banner_prompt_html(), unsafe_allow_html=True)
 
     tab_stand, tab_detail, tab_games, tab_trends = st.tabs(["Standings", "Team detail", "NFL games", "Trends"])
 
@@ -277,6 +280,7 @@ with st.expander("How this works"):
                 "players whose games have started stay put). "
                 "Team detail → All columns shows every player's number under each. "
                 "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
-                "The banner's **safe score** is the score that beats the elimination cut line in 95% of simulations, and the **winning score** is 0.1 above the runner-up score in the median simulation, i.e. the score that would have won the week in half of them (hide it in Settings). "
+                "The banner is for **★ My team**: its **safe score** beats the elimination cut line (set by the other teams) in 95% of simulations, and its **winning score** is 0.1 above the best other team's score in the median simulation, "
+                "so it beats every other team half the time (hide the banner in Settings). "
                 "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
                 "Ties in points are shown as T-ranks.")

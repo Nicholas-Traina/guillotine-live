@@ -23,6 +23,9 @@ div[data-testid="stElementContainer"]:has(.gbn) { position: sticky; top: 3.75rem
 @media (prefers-color-scheme: dark) { .gbn { background: rgba(14,17,23,.94); } }
 .gbn div { display: flex; flex-direction: column; align-items: center; min-width: 0; text-align: center; }
 .gbn b { font-size: 1.35rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.gbn .gbo { flex: 0 1 30%; font-size: .78rem; font-weight: 700; justify-content: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; line-height: 2.4; }
+.gbn .gbp { font-size: .82rem; text-align: center; padding: .3rem 0; } .gbn .gbp b { font-size: inherit; }
+.gbn b.gbs { font-size: .95rem; padding: .3rem 0; }
 .gbn small { opacity: .7; font-size: .68rem; line-height: 1.15; }
 .gg { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: .7rem; margin: .25rem 0 1rem; }
 .gc { --c: rgba(128,128,128,.5); position: relative; overflow: hidden; border: 1px solid rgba(128,128,128,.35); border-radius: 10px;
@@ -54,15 +57,24 @@ div[data-testid="stElementContainer"]:has(.gbn) { position: sticky; top: 3.75rem
 
 
 def banner_html(lines):
-    """Sticky banner with the safe score and the winning score. `lines` is guillotine_live.score_lines(); '' if it isn't available."""
+    """Sticky banner with one team's safe score and winning score. `lines` is guillotine_live.score_lines(owner=...); '' if unavailable."""
     if not lines or lines.get("winning") is None:
         return ""
-    def num(v):
-        return "–" if v is None else f"{float(v):.1f}"
     sp, wp = float(lines.get("safe_pct", 95)), float(lines.get("win_pct", 50))
-    return (f'<div class="gbn">'
-            f'<div title="A score above this beats the elimination cut line in {sp:g}% of simulations"><small>Safe score · {sp:g}%</small><b>{num(lines.get("safe"))}</b></div>'
-            f'<div title="0.1 above the runner-up score in the median simulation: a score above this would have won the week in {wp:g}% of simulations"><small>Winning score · {wp:g}%</small><b>{num(lines.get("winning"))}</b></div></div>')
+    who = html.escape(str(lines.get("owner") or ""))
+    if lines.get("immune"):
+        safe = '<b class="gbs">immune</b>'
+    else:
+        safe = f'<b>{"–" if lines.get("safe") is None else format(float(lines["safe"]), ".1f")}</b>'
+    return (f'<div class="gbn"><div class="gbo" title="{who}">★ {who}</div>'
+            f'<div title="{who}: a score above this keeps you out of the elimination spots in {sp:g}% of simulations"><small>Safe score · {sp:g}%</small>{safe}</div>'
+            f'<div title="{who}: 0.1 above the best other team in the median simulation, a score that beats every other team in {wp:g}% of simulations">'
+            f'<small>Winning score · {wp:g}%</small><b>{float(lines["winning"]):.1f}</b></div></div>')
+
+
+def banner_prompt_html():
+    """Shown in place of the banner until a team is picked: the scores depend on which team you are."""
+    return '<div class="gbn"><div class="gbp">Pick <b>★ My team</b> to see your safe and winning scores</div></div>'
 
 
 def _bar(label, pct, cls):

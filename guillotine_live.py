@@ -578,32 +578,42 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
 WIN_MARGIN = 0.1        # the winning score is this far above the runner-up's score
 
 
-def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0, win_margin=WIN_MARGIN):
+def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0, win_pct=50.0, win_margin=WIN_MARGIN, owner=None):
     """
-    Two scores to aim for this week, from the same simulation as the odds:
-      safe     the score that beats the elimination cut line in `safe_pct`% of simulations. The cut line is the score of the last team cut
-               (the k-th lowest among teams that can be cut; immune teams are not cut), so a team above `safe` survives that often.
-      winning  the score that would have won the week in `win_pct`% of simulations: the runner-up's score (the second highest of the week, so a
-               team above it beats everyone else) plus `win_margin`. Its median across the simulations at the default 50%.
-    Returns {"safe": float or None, "winning": float, "safe_pct": ..., "win_pct": ...}; safe is None if nobody can be cut.
+    Two scores a team can aim for this week, from the same simulation as the odds. They depend on WHICH team you are, because your own score
+    isn't one of the scores you have to beat, so pass `owner` (a team's name, any capitalisation):
+      safe     the score that keeps `owner` out of the cut in `safe_pct`% of simulations: it beats the elimination cut line, the k-th lowest
+               score among the OTHER teams that can be cut (immune teams can't be cut). None if `owner` is immune or can't be safe.
+      winning  the score that beats every other team in `win_pct`% of simulations (the median of the best other team's score), plus
+               `win_margin` so it is a beat rather than a tie.
+    With owner=None it gives the numbers for an extra team competing against the whole field (all teams' cut line and top score).
+    Returns {"owner", "safe", "winning", "safe_pct", "win_pct", "immune"}; safe/winning are None when they can't be computed (unknown owner).
     """
-    t = teams.reset_index(drop=True)
+    t = teams.sort_values("owner", key=lambda c: c.str.lower(), kind="stable").reset_index(drop=True)      # same draws per team however the table is sorted
     T = len(t)
+    out = {"owner": owner, "safe": None, "winning": None, "safe_pct": safe_pct, "win_pct": win_pct, "immune": False}
     if T == 0:
-        return {"safe": None, "winning": None, "safe_pct": safe_pct, "win_pct": win_pct}
+        return out
     rng = np.random.default_rng(seed)
     Z = rng.standard_normal((T, n_sims))
     total = t["current"].values[:, None] + np.maximum(t["expected_remaining"].values[:, None] + t["sd_remaining"].values[:, None] * Z, 0.0)
     immune = t["owner"].str.lower().isin({u.lower() for u in immune_owners}).values
-    eligible = total[~immune]
-    k_eff = int(min(k, eligible.shape[0]))
-    safe = None
-    if k_eff >= 1:
-        cut_line = np.partition(eligible, k_eff - 1, axis=0)[k_eff - 1]              # score of the last team cut, in each simulation
-        safe = float(np.quantile(cut_line, safe_pct / 100.0))
-    runner_up = np.partition(total, T - 2, axis=0)[T - 2] if T >= 2 else total.max(axis=0)          # second-highest score in each simulation
-    winning = float(np.quantile(runner_up, win_pct / 100.0)) + (win_margin if T >= 2 else 0.0)
-    return {"safe": safe, "winning": winning, "safe_pct": safe_pct, "win_pct": win_pct}
+    others = np.ones(T, dtype=bool)
+    if owner is not None:
+        me = np.flatnonzero(t["owner"].str.lower().values == str(owner).lower())
+        if len(me) == 0:
+            return out                                                              # not in this week's standings
+        others[me[0]] = False
+        out["immune"] = bool(immune[me[0]])
+    if not others.any():                                                            # a one-team field: nobody to beat
+        out["winning"] = float(np.quantile(total.max(axis=0), win_pct / 100.0))
+        return out
+    out["winning"] = float(np.quantile(total[others].max(axis=0), win_pct / 100.0)) + win_margin
+    eligible = total[others & ~immune]                                              # the scores that can be cut, other than the owner's
+    if not out["immune"] and 1 <= k <= eligible.shape[0]:
+        cut_line = np.partition(eligible, int(k) - 1, axis=0)[int(k) - 1]          # score of the last team cut, in each simulation
+        out["safe"] = float(np.quantile(cut_line, safe_pct / 100.0))
+    return out
 
 
 def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000, projection=None):
@@ -615,7 +625,6 @@ def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_s
         k = int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
     standings = simulate_standings(teams, k, immune_owners, n_sims)
     return {"standings": standings, "details": details, "games": games, "k": k, "projection": projection or DEFAULT_PROJECTION,
-            "lines": score_lines(teams, k, immune_owners, n_sims),
             "clock_source": clock["source"], "clock_estimated": clock["estimated"], "clock_attempts": clock["attempts"],
             "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"), "fetched_epoch": time.time(),
             "fetched_central": format_central(time.time())}
