@@ -217,14 +217,20 @@ def live_panel():
                      column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "Exp. final")})
         for note in d.loc[d["player"].str.endswith("*"), "flag"]:
             st.caption(note.replace("*", "\\*", 1))
+        _, stacks = gl.team_stack_covariance(snap["details"][rid], snap.get("variance_model", gl.DEFAULT_VARIANCE_MODEL))
+        if stacks:
+            tr = s.loc[s["owner"] == who].iloc[0]
+            names = ", ".join(f"{q} + {r}" for q, r, _, _ in stacks).replace("*", "\\*")
+            st.caption(f"Same-team stack{'s' if len(stacks) > 1 else ''}: {names}. A QB and his teammates tend to score together, so this team's ± is "
+                       f"{tr['sd_remaining']:.1f} instead of {tr['sd_independent']:.1f}.")
         with st.expander("All columns"):
             full = d.rename(columns={"player": "Player", "pos": "Pos", "nfl_team": "Team", "game": "Game", "pts_so_far": "Pts", "fraction_left": "% left",
                                      "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag",
                                      "source": "Source", "model_projection": "Model", "sleeper_projection": "Sleeper", "return_pts": "Return pts",
-                                     "sleeper_plus_returns": "Sleeper + ret"})
-            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Source", "Model", "Sleeper", "Return pts", "Sleeper + ret", "Proj remaining", "Expected final", "Flag"]],
+                                     "sleeper_plus_returns": "Sleeper + ret", "sd_game": "Player sd (full game)"})
+            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Source", "Model", "Sleeper", "Return pts", "Sleeper + ret", "Proj remaining", "Expected final", "Player sd (full game)", "Flag"]],
                          hide_index=True, width="stretch",
-                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Model", "Sleeper", "Return pts", "Sleeper + ret", "Proj remaining", "Expected final")})
+                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Model", "Sleeper", "Return pts", "Sleeper + ret", "Proj remaining", "Expected final", "Player sd (full game)")})
 
     with tab_games:
         seen, rows = set(), []
@@ -279,7 +285,7 @@ with st.expander("How this works"):
                 "refills his slot from the bench (players can shift between slots such as FLEX / SUPER_FLEX; the team's other starters stay in and "
                 "players whose games have started stay put). "
                 "Team detail → All columns shows every player's number under each. "
-                "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
+                "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come: a player's uncertainty grows with his projection, a QB moves together with his own WR / TE / RB teammates in the same lineup, and it all shrinks as games finish. "
                 "The banner is for **★ My team**: its **safe scores** beat the elimination cut line (the k-th lowest score among the other teams that can be cut) in 50% and 95% of simulations, "
                 "and its **winning score** is 0.1 above the best other team's score in the median simulation, so it beats every other team half the time. "
                 "An immune team's safe scores are the scores that keep its immunity (finishing above the team that would be cut). Hide the banner in Settings. "

@@ -8,7 +8,9 @@ Combines
 
 into, for every live team:
     expected final = points so far + sum over starters of (fraction of game left x model projection)
-    uncertainty    = sqrt( sum over starters of sigma_position^2 x fraction of game left )
+    uncertainty    = sqrt( sum over starters of sd(player)^2 x fraction of game left  +  QB-teammate covariances )
+                     where sd(player) grows with his projection (see SD_BY_PROJECTION) and a QB's score is correlated with the WR / TE / RB
+                     on his own NFL team in the same lineup (see QB_TEAMMATE_RHO)
 and simulates the week to get P(last), P(2nd-to-last), P(eliminated) and P(first place).
 
 Run `python guillotine_live.py` for a one-shot text table, or `streamlit run live_app.py` for the live page.
@@ -334,6 +336,44 @@ def load_inputs(path):
 
 
 # ------------------------------------------------------------------ the math
+# How uncertain a player's score is. Fitted on 2021-25 player-weeks (Sleeper projection vs actual points, this league's scoring): see
+# variance_tests/RESULTS.md. The sd of a player's full-game score is s0 + s1 x his projection (position by position), and a QB's surprise is
+# correlated with the surprise of his own teammates (same NFL team) in the same lineup.
+SD_BY_PROJECTION = {"QB": (5.75, 0.111), "RB": (3.96, 0.283), "WR": (3.96, 0.301), "TE": (2.20, 0.472), "K": (5.04, 0.0)}
+QB_TEAMMATE_RHO = {"WR": 0.30, "TE": 0.28, "RB": 0.09}          # starter-caliber pairs (both projected 5+ points)
+VARIANCE_MODELS = ("position", "projection", "projection_corr")   # old: one sd per position | sd by projection | sd by projection + QB stacks
+DEFAULT_VARIANCE_MODEL = "projection_corr"
+
+
+def player_sd(position, projection, default_sd, model=DEFAULT_VARIANCE_MODEL):
+    """sd of a player's FULL-game score. Positions without a fit (defenses ...) and the old 'position' model use `default_sd`."""
+    if model != "position" and position in SD_BY_PROJECTION:
+        s0, s1 = SD_BY_PROJECTION[position]
+        return s0 + s1 * max(float(projection), 0.0)
+    return float(default_sd)
+
+
+def team_stack_covariance(st, model=DEFAULT_VARIANCE_MODEL):
+    """
+    Variance a lineup gains from QB-teammate correlation: for each QB and each WR / TE / RB of the same NFL team in the lineup,
+    2 x rho x sd_remaining(QB) x sd_remaining(teammate). Both sds already carry the fraction of the game left (they play the same game, so
+    the fraction is the same), which makes the covariance shrink with the clock exactly like the variances do. Returns (added variance, pairs).
+    """
+    if model != "projection_corr" or st is None or len(st) == 0:
+        return 0.0, []
+    sd = np.sqrt(st["var_remaining"].clip(lower=0.0))
+    added, pairs = 0.0, []
+    for qi in st.index[st["pos"] == "QB"]:
+        team = st.at[qi, "nfl_team"]
+        if team is None or (isinstance(team, float) and math.isnan(team)):
+            continue
+        for ri in st.index[(st["nfl_team"] == team) & st["pos"].isin(list(QB_TEAMMATE_RHO))]:
+            rho = QB_TEAMMATE_RHO[st.at[ri, "pos"]]
+            added += 2.0 * rho * float(sd[qi]) * float(sd[ri])
+            pairs.append((st.at[qi, "player"], st.at[ri, "player"], st.at[ri, "pos"], rho))
+    return added, pairs
+
+
 def _lacks_sleeper_projection(info):
     """An available player (not Out / IR / bye / not in the export) that Sleeper has no projection for and who isn't a returner
     (a returner Sleeper doesn't project already has a Sleeper + return points value: 0 + his predicted return points)."""
@@ -454,11 +494,13 @@ def _ideal_replacements(rows, matchup, players, games, slots):
     return {r["player_id"]: (share, note) for r, share in zip(flagged, shares)}
 
 
-def starter_table(matchup, inputs, games, projection=None, slots=None):
+def starter_table(matchup, inputs, games, projection=None, slots=None, variance_model=None):
     """One row per starter of one team: points so far, game state, expected remaining and expected final.
     `projection` is 'sleeper_returns' | 'sleeper' | 'model' (default: DEFAULT_PROJECTION).
     `slots` = the league's starting slots in order (fetch_roster_positions); lets a starter Sleeper doesn't project be replaced by the best
-    possible lineup, otherwise (None) by the best bench player at his position."""
+    possible lineup, otherwise (None) by the best bench player at his position.
+    `variance_model` is one of VARIANCE_MODELS (default DEFAULT_VARIANCE_MODEL): var_remaining = sd_game^2 x fraction of the game left."""
+    vm = variance_model if variance_model in VARIANCE_MODELS else DEFAULT_VARIANCE_MODEL
     players = inputs["players"]
     sigma = inputs["sigma_by_position"]
     global_sigma = inputs.get("global_rmse", 7.5)
@@ -495,7 +537,7 @@ def starter_table(matchup, inputs, games, projection=None, slots=None):
             name += "*"
         elif lack:
             name += "*"                                        # value and note are filled in below, once the ideal lineup is known
-        sig = float(sigma.get(info.get("position"), global_sigma))
+        sd_game = player_sd(info.get("position"), proj, sigma.get(info.get("position"), global_sigma), vm)
         exp_rem = f * proj
         flag = info.get("availability", "") or note
         if info.get("position") == "DEF" and g and g["state"] == "in":
@@ -508,7 +550,7 @@ def starter_table(matchup, inputs, games, projection=None, slots=None):
             "game": (g["detail"] if g else "BYE"), "state": (g["state"] if g else "bye"),
             "pts_so_far": float(pts or 0.0), "fraction_left": f, "projection": proj,
             "expected_remaining": exp_rem, "expected_final": float(pts or 0.0) + exp_rem,
-            "var_remaining": (sig ** 2) * f if proj > 0 else 0.0, "flag": flag,
+            "sd_game": sd_game, "var_remaining": (sd_game ** 2) * f if proj > 0 else 0.0, "flag": flag,
             "source": source, "model_projection": info.get("model_projection", info.get("projected_points")),
             "sleeper_projection": info.get("sleeper_projection"), "return_pts": info.get("return_pts_projection"),
             "sleeper_plus_returns": info.get("sleeper_plus_returns"),
@@ -520,8 +562,9 @@ def starter_table(matchup, inputs, games, projection=None, slots=None):
             if r["player_id"] in fixes:
                 value, note = fixes[r["player_id"]]
                 f = r["fraction_left"]
+                sd_game = player_sd(r["pos"], value, sigma.get(r["pos"], global_sigma), vm)
                 r.update(projection=value, source="replacement", flag=note, expected_remaining=f * value,
-                         expected_final=r["pts_so_far"] + f * value, var_remaining=(float(sigma.get(r["pos"], global_sigma)) ** 2) * f if value > 0 else 0.0)
+                         expected_final=r["pts_so_far"] + f * value, sd_game=sd_game, var_remaining=(sd_game ** 2) * f if value > 0 else 0.0)
             elif r["_lack"] and r["state"] in ("in", "post"):
                 r["flag"] = f"* Sleeper has no projection and his game is under way: using the model ({r['projection']:.1f})"
     for r in rows:
@@ -529,23 +572,26 @@ def starter_table(matchup, inputs, games, projection=None, slots=None):
     return pd.DataFrame(rows)
 
 
-def live_team_table(matchups, inputs, games, projection=None, slots=None):
+def live_team_table(matchups, inputs, games, projection=None, slots=None, variance_model=None):
     """One row per live team (teams with an empty roster were already eliminated)."""
+    vm = variance_model if variance_model in VARIANCE_MODELS else DEFAULT_VARIANCE_MODEL
     owners = inputs["owners"]
     out, details = [], {}
     for m in matchups:
         if not m.get("players"):
             continue
         rid = m["roster_id"]
-        st = starter_table(m, inputs, games, projection, slots)
+        st = starter_table(m, inputs, games, projection, slots, vm)
         details[rid] = st
         cur = float(m.get("points") or 0.0)
         mu = float(st["expected_remaining"].sum()) if len(st) else 0.0
         var = float(st["var_remaining"].sum()) if len(st) else 0.0
+        stack_var, stack_pairs = team_stack_covariance(st, vm)              # QB + teammates on the same NFL team move together
         active = st[st["projection"] > 0] if len(st) else st
         progress = float(1.0 - active["fraction_left"].mean()) if len(active) else 1.0
         out.append({"roster_id": rid, "owner": owners.get(str(rid), f"team {rid}"), "current": cur, "expected_remaining": mu,
-                    "expected_final": cur + mu, "sd_remaining": math.sqrt(var), "progress": progress,
+                    "expected_final": cur + mu, "sd_remaining": math.sqrt(var + stack_var), "sd_independent": math.sqrt(var),
+                    "stack_pairs": len(stack_pairs), "progress": progress,
                     "starters_done": int((st["state"].isin(["post", "bye"])).sum()) if len(st) else 0, "n_starters": len(st)})
     return pd.DataFrame(out), details
 
@@ -619,15 +665,16 @@ def score_lines(teams, k, immune_owners=(), n_sims=20000, seed=42, safe_pct=95.0
     return out
 
 
-def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000, projection=None):
+def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000, projection=None, variance_model=None):
     """Everything the page needs in one call."""
     matchups = fetch_matchups(league_id, week)
     games, clock = fetch_game_states_detailed(season, week)
-    teams, details = live_team_table(matchups, inputs, games, projection, fetch_roster_positions(league_id))
+    teams, details = live_team_table(matchups, inputs, games, projection, fetch_roster_positions(league_id), variance_model)
     if k is None:
         k = int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
     standings = simulate_standings(teams, k, immune_owners, n_sims)
     return {"standings": standings, "details": details, "games": games, "k": k, "projection": projection or DEFAULT_PROJECTION,
+            "variance_model": variance_model if variance_model in VARIANCE_MODELS else DEFAULT_VARIANCE_MODEL,
             "clock_source": clock["source"], "clock_estimated": clock["estimated"], "clock_attempts": clock["attempts"],
             "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"), "fetched_epoch": time.time(),
             "fetched_central": format_central(time.time())}
