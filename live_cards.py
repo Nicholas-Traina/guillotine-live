@@ -62,25 +62,27 @@ def risk_class(p_elim_pct, p_first_pct=0.0, in_zone=False):
     return "or" if p_elim_pct >= 5 else "lg"
 
 
-IMMUNE_RED_PCT = 25.0      # an immune team turns red below the blue when it has this chance (%) of finishing in a cut position
-
-
 def in_elim_zone(standings, k):
-    """Bool list, one per team: red-flagged teams. A team that can be cut is in the zone if it is one of the k teams with the highest chance
-    of being eliminated. An immune team can't be cut, but it is in the zone when its chance of finishing in a cut position (which it would
-    lose its immunity's protection from) is above IMMUNE_RED_PCT."""
+    """Bool list, one per team: red-flagged teams. A team that can be cut is red when it is one of the k teams with the highest chance of
+    being eliminated. An immune team can't be cut, so it is red when it WOULD be red without immunity: when its chance of finishing in a cut
+    position (p_in_elim_spot, which ignores immunity) is among the k highest of all teams."""
+    n = len(standings)
     pe = [float(x) for x in standings["p_eliminated"]]
     imm = [bool(i) for i in standings["immune"]]
-    pin = [float(x) for x in standings["p_in_elim_spot"]] if "p_in_elim_spot" in standings else [0.0] * len(pe)
-    cut = sorted((i for i in range(len(pe)) if not imm[i]), key=lambda i: -pe[i])[:max(int(k), 0)]
-    return [(i in cut) if not imm[i] else pin[i] * 100 > IMMUNE_RED_PCT for i in range(len(pe))]
+    pin = [float(x) for x in standings["p_in_elim_spot"]] if "p_in_elim_spot" in standings else [0.0] * n
+    k = max(int(k), 0)
+    cut = set(sorted((i for i in range(n) if not imm[i]), key=lambda i: -pe[i])[:k])
+    would_cut = set(sorted(range(n), key=lambda i: -pin[i])[:k]) if "p_in_elim_spot" in standings else set()
+    return [(i in cut) if not imm[i] else (i in would_cut) for i in range(n)]
 
 
 def team_card(row, k, show_last, is_me=False):
     """row: one team of the standings table with probabilities as fractions (0-1). Returns an HTML string."""
     pe, pl, p2, pf = (float(row[c]) * 100 for c in ("p_eliminated", "p_last", "p_second_last", "p_first"))
     immune, locked = bool(row["immune"]), bool(row["locked"])
-    cls = risk_class(pe, pf, bool(row.get("in_zone", False))) + (" imm" if immune else "") + (" me" if is_me else "")
+    # an immune team can't be eliminated, so its risk colour comes from its chance of finishing in a cut position instead
+    risk = float(row["p_in_elim_spot"]) * 100 if immune and "p_in_elim_spot" in row else pe
+    cls = risk_class(risk, pf, bool(row.get("in_zone", False))) + (" imm" if immune else "") + (" me" if is_me else "")
     tags = ""
     if immune:
         tags += '<span class="gtag">🛡 immune</span>'
