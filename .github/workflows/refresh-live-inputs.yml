@@ -76,6 +76,7 @@ jobs:
             echo "nothing changed"
           else
             git commit -m "Refresh live projections"
-            git pull --rebase
+            # if the owner's PC pushed a projections file in the meantime, both are fresh: keep this run's copy instead of failing
+            git pull --rebase -X theirs
             git push
           fi
