@@ -52,18 +52,23 @@ def projected_return_points(stats, scoring):
     return sum(float(stats.get(k) or 0) * float(scoring.get(k, 0) or 0) for k in ("kr_yd", "pr_yd"))
 
 
-def add_return_points(players, sleeper, scoring, return_pts):
+RETURNER_MIN = 1.0      # predicted return points per game at or above this make a player a returner (the rest of the field is ~0.1 or less)
+
+
+def add_return_points(players, sleeper, scoring, return_pts, returner_min=RETURNER_MIN):
     """
     Update an export's players dict in place. Each player gets:
       model_projection        the model's number (0 if on a bye / Out / IR)
       sleeper_projection      Sleeper's number scored with the league (None if Sleeper has none; 0 if unavailable)
       sleeper_return_comp     the return points inside Sleeper's number
       return_pts_projection   the return-points model's prediction (0 for team defenses)
-      sleeper_plus_returns    sleeper_projection - sleeper_return_comp + return_pts_projection (None if Sleeper has no projection)
+      sleeper_plus_returns    sleeper_projection - sleeper_return_comp + return_pts_projection (None if Sleeper has no projection,
+                              except for a returner (predicted return points >= returner_min): Sleeper's missing projection counts as 0,
+                              so he is 0 + his predicted return points)
     projected_points is left as the model's number; guillotine_live.pick_projection chooses which one a page uses.
     Returns counts for the log.
     """
-    counts = {"players": 0, "with_sleeper": 0, "no_sleeper_projection": 0, "with_return_points": 0}
+    counts = {"players": 0, "with_sleeper": 0, "no_sleeper_projection": 0, "with_return_points": 0, "returner_only": 0}
     for pid, p in players.items():
         counts["players"] += 1
         available = p.get("availability", "") == ""
@@ -79,6 +84,9 @@ def add_return_points(players, sleeper, scoring, return_pts):
             p["sleeper_projection"] = None
             p["sleeper_plus_returns"] = None
             counts["no_sleeper_projection"] += 1
+            if available and ret >= returner_min:
+                p["sleeper_plus_returns"] = round(ret, 3)
+                counts["returner_only"] += 1
         else:
             counts["with_sleeper"] += 1
             p["sleeper_projection"] = round(sp if available else 0.0, 3)

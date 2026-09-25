@@ -335,8 +335,10 @@ def load_inputs(path):
 
 # ------------------------------------------------------------------ the math
 def _lacks_sleeper_projection(info):
-    """An available player (not Out / IR / bye / not in the export) that Sleeper has no projection for."""
-    return "sleeper_projection" in info and info["sleeper_projection"] is None and not info.get("availability")
+    """An available player (not Out / IR / bye / not in the export) that Sleeper has no projection for and who isn't a returner
+    (a returner Sleeper doesn't project already has a Sleeper + return points value: 0 + his predicted return points)."""
+    return ("sleeper_projection" in info and info["sleeper_projection"] is None and info.get("sleeper_plus_returns") is None
+            and not info.get("availability"))
 
 
 def _bench_by_position(matchup, players):
@@ -405,11 +407,11 @@ def _best_assignment(slots, pool):
 
 def _ideal_replacements(rows, matchup, players, games, slots):
     """
-    For starters Sleeper doesn't project (`rows` flagged '_lack'): assume they are unavailable and take the best possible lineup from
-    the team's remaining players, moving people between slots (a WR to FLEX / SUPER_FLEX frees a slot for someone else). Only players whose
-    games haven't started can be moved. The lineup's gain over the current projected starters is shared out over the flagged rows,
-    so the team total equals the ideal lineup (0 if nobody can fill the slot). Returns {player_id: (value, note)}; flagged players whose game
-    has started are left out (they keep the model's number).
+    For starters Sleeper doesn't project and who aren't returners (`rows` flagged '_lack'): assume they are unavailable and fill the
+    slots they leave from the rest of the roster, moving people between slots (a WR to FLEX / SUPER_FLEX frees a slot for someone else).
+    Every other starter stays a starter (an owner's other lineup choices are not second-guessed); only bench players come in. Only players
+    whose games haven't started can be moved. The bench players' points are shared out over the flagged rows (0 if nobody can fill the
+    slot). Returns {player_id: (value, note)}; flagged players whose game has started are left out (they keep the model's number).
     """
     starters = matchup.get("starters") or []
 
@@ -435,13 +437,14 @@ def _ideal_replacements(rows, matchup, players, games, slots):
         if source == "model":                                  # Sleeper doesn't project him either
             continue
         pool.append((pid, info["position"], value))
-    by_pid = {r["player_id"]: r for r in rows}
-    baseline = sum(by_pid[starters[i]]["projection"] for i in free if starters[i] not in (None, "0") and starters[i] in by_pid
-                   and starters[i] not in flagged_ids)
-    chosen = _best_assignment([slots[i] for i in free], pool)
-    ideal = sum(pool[j][2] for j in chosen.values())
-    promoted = [players[pool[j][0]]["name"] for j in chosen.values() if pool[j][0] not in in_lineup]
-    gain = ideal - baseline
+    # the other starters are kept in the lineup (a big bonus makes the solver always start them); it only decides who else comes in and
+    # which slots everyone takes
+    keep_bonus = 1e6
+    biased = [(pid, pos, value + (keep_bonus if pid in in_lineup else 0.0)) for pid, pos, value in pool]
+    chosen = _best_assignment([slots[i] for i in free], biased)
+    promoted_idx = [j for j in chosen.values() if pool[j][0] not in in_lineup]
+    promoted = [players[pool[j][0]]["name"] for j in promoted_idx]
+    gain = sum(pool[j][2] for j in promoted_idx)
     weights = [max(float(r["_model"] or 0.0), 0.0) for r in flagged]
     total_w = sum(weights)
     shares = [(w / total_w if total_w else 1.0 / len(flagged)) * gain for w in weights]

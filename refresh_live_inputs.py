@@ -241,7 +241,7 @@ def refresh():
             payload["projection_choices"] = gl.PROJECTION_LABELS
             payload["projection_counts"] = counts
             top = sorted((v for v in payload["players"].values() if v.get("return_pts_projection")), key=lambda v: -v["return_pts_projection"])[:3]
-            rule_note = (f" | projections: {counts['with_sleeper']} with Sleeper, {counts['no_sleeper_projection']} model-only; return points predicted for "
+            rule_note = (f" | projections: {counts['with_sleeper']} with Sleeper, {counts['no_sleeper_projection']} without one ({counts['returner_only']} returners counted as 0 + return points); return points predicted for "
                          f"{counts['with_return_points']} (top: {', '.join(v['name'] + ' ' + format(v['return_pts_projection'], '.1f') for v in top)})")
         except Exception:
             log("WARNING: Sleeper projections skipped, model projections only:\n" + traceback.format_exc(limit=3))
