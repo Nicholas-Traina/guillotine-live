@@ -319,6 +319,27 @@ def load_inputs(path):
 
 
 # ------------------------------------------------------------------ the math
+def _lacks_sleeper_projection(info):
+    """An available player (not Out / IR / bye / not in the export) that Sleeper has no projection for."""
+    return "sleeper_projection" in info and info["sleeper_projection"] is None and not info.get("availability")
+
+
+def _bench_by_position(matchup, players):
+    """{position: [(sleeper + return points projection, name), ...] best first} for the team's available bench players
+    that Sleeper does project. Each entry can replace one starter (the caller pops it)."""
+    starters = {p for p in (matchup.get("starters") or []) if p not in (None, "0")}
+    out = {}
+    for pid in matchup.get("players") or []:
+        info = players.get(pid)
+        if pid in starters or info is None or info.get("availability"):
+            continue
+        value, source = pick_projection(info, "sleeper_returns")
+        if source == "model":                                  # Sleeper doesn't project him either
+            continue
+        out.setdefault(info["position"], []).append((value, info["name"]))
+    return {pos: sorted(lst, key=lambda x: -x[0]) for pos, lst in out.items()}
+
+
 def starter_table(matchup, inputs, games, projection=None):
     """One row per starter of one team: points so far, game state, expected remaining and expected final.
     `projection` is 'sleeper_returns' | 'sleeper' | 'model' (default: DEFAULT_PROJECTION)."""
@@ -329,6 +350,8 @@ def starter_table(matchup, inputs, games, projection=None):
     rows = []
     starters = matchup.get("starters") or []
     pts_list = matchup.get("starters_points") or [0.0] * len(starters)
+    use_bench = (projection if projection in PROJECTION_LABELS else DEFAULT_PROJECTION) == "sleeper_returns"
+    bench = _bench_by_position(matchup, players) if use_bench else {}
     for pid, pts in zip(starters, pts_list):
         if pid in (None, "0"):
             continue
@@ -340,16 +363,28 @@ def starter_table(matchup, inputs, games, projection=None):
         g = games.get(team)
         f = g["fraction_left"] if g else 0.0                   # no game this week (bye) -> nothing left to play
         proj, source = pick_projection(info, projection)
+        name = info["name"]
+        note = ""
+        if use_bench and _lacks_sleeper_projection(info):
+            # Sleeper doesn't project him (injury doubt, a lost job, a returning starter ...): count the best bench player at his position instead
+            queue = bench.get(info.get("position"), [])
+            if queue:
+                value, rep_name = queue.pop(0)
+                proj, source = value, "replacement"
+                note = f"* Sleeper has no projection: counting best bench {info.get('position')} {rep_name} ({value:.1f})"
+            else:
+                note = f"* Sleeper has no projection and no bench {info.get('position')}: using the model ({proj:.1f})"
+            name += "*"
         sig = float(sigma.get(info.get("position"), global_sigma))
         exp_rem = f * proj
-        flag = info.get("availability", "")
+        flag = info.get("availability", "") or note
         if info.get("position") == "DEF" and g and g["state"] == "in":
             # Defense scores in steps (points / yards allowed) that move down as well as up, so prorating a projection
             # doesn't fit: while the game is on, expected final = current. The +/- still shrinks with time left.
             exp_rem = 0.0
             flag = flag or "DEF: final = current"
         rows.append({
-            "player_id": pid, "player": info["name"], "pos": info["position"], "nfl_team": team,
+            "player_id": pid, "player": name, "pos": info["position"], "nfl_team": team,
             "game": (g["detail"] if g else "BYE"), "state": (g["state"] if g else "bye"),
             "pts_so_far": float(pts or 0.0), "fraction_left": f, "projection": proj,
             "expected_remaining": exp_rem, "expected_final": float(pts or 0.0) + exp_rem,

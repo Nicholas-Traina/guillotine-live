@@ -204,6 +204,8 @@ def live_panel():
         compact = pd.DataFrame({"Player": d["player"] + " (" + d["pos"] + ")", "Pts": d["pts_so_far"], "Exp. final": d["expected_final"], "Game": d["game"]})
         st.dataframe(compact, hide_index=True, width="stretch",
                      column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "Exp. final")})
+        for note in d.loc[d["player"].str.endswith("*"), "flag"]:
+            st.caption(note.replace("*", "\\*", 1))
         with st.expander("All columns"):
             full = d.rename(columns={"player": "Player", "pos": "Pos", "nfl_team": "Team", "game": "Game", "pts_so_far": "Pts", "fraction_left": "% left",
                                      "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag",
@@ -261,7 +263,9 @@ with st.expander("How this works"):
                 "There are three projections (sidebar → Projection; the default is set in live_config.json): the **Model**, **Sleeper**'s own "
                 "(scored with this league's rules), and **Sleeper + return points** — Sleeper's number with its own return yardage taken out "
                 "plus a model of the return points (return yards and return touchdowns) a player will score, from his return yards per game so far "
-                "this season and the week. Team detail → All columns shows every player's number under each. "
+                "this season and the week. If Sleeper has no projection for one of a team's starters (a doubtful role or injury), a starred name (*) means "
+                "'Sleeper + return points' counts that team's best bench player at the same position instead. "
+                "Team detail → All columns shows every player's number under each. "
                 "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
                 "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
                 "Ties in points are shown as T-ranks.")
