@@ -335,6 +335,8 @@ def starter_table(matchup, inputs, games):
             "pts_so_far": float(pts or 0.0), "fraction_left": f, "projection": proj,
             "expected_remaining": exp_rem, "expected_final": float(pts or 0.0) + exp_rem,
             "var_remaining": (sig ** 2) * f if proj > 0 else 0.0, "flag": flag,
+            "source": info.get("projection_source", "model"), "model_projection": info.get("model_projection", proj),
+            "sleeper_projection": info.get("sleeper_projection"),
         })
     return pd.DataFrame(rows)
 

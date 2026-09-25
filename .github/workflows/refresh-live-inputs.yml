@@ -15,6 +15,7 @@ on:
     paths:
       - live_config.json
       - refresh_live_inputs.py
+      - sleeper_projections.py
       - guillotine_live.py
       - "Guillotine Week Projection 5.ipynb"
       - .github/workflows/refresh-live-inputs.yml

@@ -26,6 +26,8 @@ import warnings
 
 import requests
 
+import sleeper_projections as sp
+
 warnings.filterwarnings("ignore")
 HERE = os.path.dirname(os.path.abspath(__file__))
 NOTEBOOK = os.path.join(HERE, "Guillotine Week Projection 5.ipynb")
@@ -201,6 +203,21 @@ def refresh():
         except Exception:
             n_pool = 0
             log("WARNING: free-agent pool skipped (rostered players are still projected):\n" + traceback.format_exc(limit=3))
+        rule_note = ""
+        try:                                              # owner's rule: Sleeper's projection instead of the model's for low projections
+            scoring = ns["get_league_scoring"](season)
+            sleeper = sp.fetch_sleeper_projections(season, week)
+            if sp.usable_count(sleeper) < 300 or not scoring:
+                raise RuntimeError(f"Sleeper projections unavailable ({sp.usable_count(sleeper)} players with points) or league scoring missing")
+            ret = sp.return_points_per_game(ns["_WEEKLY_STATS_CACHE"], scoring, season, week)
+            counts = sp.apply_rule(payload["players"], sleeper, scoring, ret)
+            n_start = sum(1 for v in payload["players"].values() if v.get("projection_source") == "sleeper" and v.get("starter_at_export"))
+            payload["projection_rule"] = {"sleeper_below": sp.SLEEPER_BELOW, "return_pts_per_game": sp.RETURN_PTS_PER_GAME,
+                                          "history_seasons": sp.HISTORY_SEASONS, **counts}
+            rule_note = (f" | Sleeper projection used for {counts['sleeper']} players ({n_start} starters at export), "
+                         f"{counts['returner_kept_model']} returners kept on the model")
+        except Exception:
+            log("WARNING: Sleeper-projection rule skipped, model projections used for everyone:\n" + traceback.format_exc(limit=3))
         tmp_final = final_path + ".tmp"
         with open(tmp_final, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
@@ -215,7 +232,7 @@ def refresh():
         remove_tree(work)
         atexit.register(remove_tree, work)               # Windows can keep a folder busy while this process lives: retry at exit
     log(f"OK {season} wk{week} in {time.time() - t0:.0f}s (+{n_pool} free agents projected): "
-        + (summarize_changes(old, payload) if old else f"{len(payload['players'])} players (first export)"))
+        + (summarize_changes(old, payload) if old else f"{len(payload['players'])} players (first export)") + rule_note)
     return 0
 
 

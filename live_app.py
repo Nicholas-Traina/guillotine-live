@@ -201,10 +201,11 @@ def live_panel():
                      column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "Exp. final")})
         with st.expander("All columns"):
             full = d.rename(columns={"player": "Player", "pos": "Pos", "nfl_team": "Team", "game": "Game", "pts_so_far": "Pts", "fraction_left": "% left",
-                                     "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag"})
-            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Proj remaining", "Expected final", "Flag"]],
+                                     "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag",
+                                     "source": "Source", "model_projection": "Model proj", "sleeper_projection": "Sleeper proj"})
+            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Source", "Model proj", "Sleeper proj", "Proj remaining", "Expected final", "Flag"]],
                          hide_index=True, width="stretch",
-                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Proj remaining", "Expected final")})
+                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Model proj", "Sleeper proj", "Proj remaining", "Expected final")})
 
     with tab_games:
         seen, rows = set(), []
@@ -251,6 +252,7 @@ live_panel()
 
 with st.expander("How this works"):
     st.markdown("**Projected final** = points so far + (fraction of each starter's game still to play × the model's projection). "
+                "Where Sleeper projects a player under 8 points (and he isn't a returner), Sleeper's projection is used instead of the model's (see 'All columns' under Team detail). "
                 "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
                 "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
                 "Ties in points are shown as T-ranks.")
