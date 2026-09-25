@@ -17,10 +17,13 @@ button[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButt
 button[data-testid="stExpandSidebarButton"]::after { content: "Settings"; font-size: .85rem; font-weight: 600; color: inherit; }
 [data-testid="stSidebarCollapseButton"] button::after { content: "Hide"; font-size: .85rem; font-weight: 600; color: inherit; }
 .gg { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: .7rem; margin: .25rem 0 1rem; }
-.gc { border: 1px solid rgba(128,128,128,.35); border-left: 6px solid rgba(128,128,128,.5); border-radius: 10px;
-      padding: .7rem .85rem; background: rgba(128,128,128,.07); }
-.gc.hi { border-left-color: #e5484d; } .gc.mid { border-left-color: #f5a524; } .gc.lo { border-left-color: #30a46c; }
-.gc.imm { border-left-color: #3b82f6; } .gc.me { box-shadow: 0 0 0 2px rgba(59,130,246,.6); }
+.gc { --c: rgba(128,128,128,.5); position: relative; overflow: hidden; border: 1px solid rgba(128,128,128,.35); border-radius: 10px;
+      padding: .7rem .85rem .7rem calc(.85rem + 6px); background: rgba(128,128,128,.07); }
+.gc::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--c); }
+/* left-edge colour: red = one of the teams most likely to be cut, dark green = >10% to finish first, orange = >5% elimination risk, light green = the rest */
+.gc.zn { --c: #e5484d; } .gc.dg { --c: #15803d; } .gc.or { --c: #f5a524; } .gc.lg { --c: #86d9a3; }
+.gc.imm::before { background: linear-gradient(to bottom, #3b82f6 50%, var(--c) 50%); }      /* immune: top half blue, bottom half by the usual rule */
+.gc.me { box-shadow: 0 0 0 2px rgba(59,130,246,.6); }
 .gh { display: flex; align-items: baseline; gap: .45rem; flex-wrap: wrap; margin-bottom: .35rem; }
 .gr { font-weight: 700; opacity: .6; font-size: .9rem; }
 .gnm { font-weight: 700; font-size: 1.05rem; word-break: break-word; }
@@ -37,7 +40,7 @@ button[data-testid="stExpandSidebarButton"]::after { content: "Settings"; font-s
   div[data-testid="stMainBlockContainer"], .block-container { padding: 3.6rem .6rem 3rem !important; }   /* clear Streamlit's fixed top bar */
   h1 { font-size: 1.5rem !important; } h3 { font-size: 1.25rem !important; }
   .gg { grid-template-columns: 1fr; gap: .55rem; }
-  .gc { padding: .6rem .7rem; }
+  .gc { padding: .6rem .7rem .6rem calc(.7rem + 6px); }
 }
 </style>"""
 
@@ -49,17 +52,35 @@ def _bar(label, pct, cls):
             f'<span class="gp">{pct:.1f}%</span></div>')
 
 
-def risk_class(p_elim_pct, immune):
-    if immune:
-        return "imm"
-    return "hi" if p_elim_pct >= 15 else ("mid" if p_elim_pct >= 6 else "lo")
+def risk_class(p_elim_pct, p_first_pct=0.0, in_zone=False):
+    """Colour of a card's left edge. In an elimination spot now -> red 'zn'; else >10% to finish first -> dark green 'dg';
+    else >= 5% elimination risk -> orange 'or'; else light green 'lg'."""
+    if in_zone:
+        return "zn"
+    if p_first_pct > 10:
+        return "dg"
+    return "or" if p_elim_pct >= 5 else "lg"
+
+
+IMMUNE_RED_PCT = 25.0      # an immune team turns red below the blue when it has this chance (%) of finishing in a cut position
+
+
+def in_elim_zone(standings, k):
+    """Bool list, one per team: red-flagged teams. A team that can be cut is in the zone if it is one of the k teams with the highest chance
+    of being eliminated. An immune team can't be cut, but it is in the zone when its chance of finishing in a cut position (which it would
+    lose its immunity's protection from) is above IMMUNE_RED_PCT."""
+    pe = [float(x) for x in standings["p_eliminated"]]
+    imm = [bool(i) for i in standings["immune"]]
+    pin = [float(x) for x in standings["p_in_elim_spot"]] if "p_in_elim_spot" in standings else [0.0] * len(pe)
+    cut = sorted((i for i in range(len(pe)) if not imm[i]), key=lambda i: -pe[i])[:max(int(k), 0)]
+    return [(i in cut) if not imm[i] else pin[i] * 100 > IMMUNE_RED_PCT for i in range(len(pe))]
 
 
 def team_card(row, k, show_last, is_me=False):
     """row: one team of the standings table with probabilities as fractions (0-1). Returns an HTML string."""
     pe, pl, p2, pf = (float(row[c]) * 100 for c in ("p_eliminated", "p_last", "p_second_last", "p_first"))
     immune, locked = bool(row["immune"]), bool(row["locked"])
-    cls = risk_class(pe, immune) + (" me" if is_me else "")
+    cls = risk_class(pe, pf, bool(row.get("in_zone", False))) + (" imm" if immune else "") + (" me" if is_me else "")
     tags = ""
     if immune:
         tags += '<span class="gtag">🛡 immune</span>'
@@ -86,5 +107,6 @@ def team_card(row, k, show_last, is_me=False):
 def cards_html(standings, k, my_team=""):
     """standings: DataFrame with owner, current, expected_final, sd_remaining, progress, rank_now, p_*, immune, locked."""
     show_last = k > 1 or bool(standings["immune"].any())        # with one cut and no immunity, 'last' equals 'eliminated'
+    standings = standings.assign(in_zone=in_elim_zone(standings, k))
     cards = "".join(team_card(r, k, show_last, is_me=(r["owner"] == my_team)) for _, r in standings.iterrows())
     return CSS + f'<div class="gg">{cards}</div>'

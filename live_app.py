@@ -166,6 +166,8 @@ def live_panel():
 
     with tab_stand:
         if view == "Cards":
+            st.caption("Left edge: 🔴 in an elimination spot (the teams most likely to be cut) · 🟠 5%+ chance of elimination · 🟢 under 5% · dark green 10%+ chance of first place. "
+                       "🛡 Immune teams are blue on top, with the usual colour below (red if they'd have a 25%+ chance of finishing in a cut spot).")
             st.markdown(live_cards.cards_html(s, snap["k"], my_team), unsafe_allow_html=True)
         else:
             t = s.copy()
