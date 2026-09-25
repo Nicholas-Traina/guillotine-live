@@ -213,6 +213,36 @@ def fetch_game_states(season, week):
     return fetch_game_states_detailed(season, week)[0]
 
 
+def to_central(epoch):
+    """UTC epoch seconds -> (naive datetime in US Central time, 'CDT' or 'CST'). Daylight saving without tz data:
+    it starts on the 2nd Sunday of March at 2:00 CST (08:00 UTC) and ends on the 1st Sunday of November at 2:00 CDT (07:00 UTC)."""
+    import datetime
+    utc = datetime.datetime.fromtimestamp(float(epoch), datetime.timezone.utc).replace(tzinfo=None)
+
+    def nth_sunday(month, n):
+        first = datetime.date(utc.year, month, 1)
+        return first + datetime.timedelta(days=(6 - first.weekday()) % 7 + 7 * (n - 1))
+    start = datetime.datetime.combine(nth_sunday(3, 2), datetime.time(8, 0))
+    end = datetime.datetime.combine(nth_sunday(11, 1), datetime.time(7, 0))
+    if start <= utc < end:
+        return utc - datetime.timedelta(hours=5), "CDT"
+    return utc - datetime.timedelta(hours=6), "CST"
+
+
+def format_central(epoch, seconds=True, day=False):
+    """'9:34:31 PM CDT' (or 'Thu 9/24 3:38 PM CDT' with day=True, seconds=False)."""
+    dt, tz = to_central(epoch)
+    clock = dt.strftime("%I:%M:%S %p" if seconds else "%I:%M %p").lstrip("0")
+    return (f"{dt.strftime('%a')} {dt.month}/{dt.day} " if day else "") + f"{clock} {tz}"
+
+
+def inputs_generated_text(inputs):
+    """When the projections were generated, in Central time (falls back to the raw stamp for files without an epoch)."""
+    if inputs.get("generated_epoch"):
+        return format_central(inputs["generated_epoch"], seconds=False, day=True)
+    return str(inputs.get("generated_at", "?"))
+
+
 DEFAULT_CONFIG = {"immune_teams": [], "eliminations_override": 0, "highlight_default": ""}
 
 
@@ -348,7 +378,8 @@ def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_s
     standings = simulate_standings(teams, k, immune_owners, n_sims)
     return {"standings": standings, "details": details, "games": games, "k": k,
             "clock_source": clock["source"], "clock_estimated": clock["estimated"], "clock_attempts": clock["attempts"],
-            "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"), "fetched_epoch": time.time(),
+            "fetched_central": format_central(time.time())}
 
 
 # ------------------------------------------------------------------ one-shot CLI

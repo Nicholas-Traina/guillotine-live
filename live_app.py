@@ -97,7 +97,7 @@ k_override = st.sidebar.number_input(f"Teams eliminated (0 = schedule: {default_
 k = int(k_override) if k_override else default_k
 age = gl.inputs_age_minutes(inputs)
 age_txt = f" ({age / 60:.1f} h ago)" if age is not None and age >= 90 else (f" ({age:.0f} min ago)" if age is not None else "")
-st.sidebar.caption(f"Projections: {os.path.basename(path)}\n\ngenerated {inputs.get('generated_at', '?')}{age_txt}")
+st.sidebar.caption(f"Projections: {os.path.basename(path)}\n\ngenerated {gl.inputs_generated_text(inputs)}{age_txt}")
 st.sidebar.caption("Immune teams and the cut count are shared settings (live_config.json). Changing them here only affects your own view.")
 
 # ---------------------------------------------------------------- header + "my team" (top of the page, not hidden in the sidebar)
@@ -121,7 +121,7 @@ def live_panel():
     s = snap["standings"].copy()
     games = snap["games"]
     n_in = len({frozenset((t, g["opponent"])) for t, g in games.items() if g["state"] == "in"})
-    st.caption(f"Updated {snap['fetched_at'][11:]} · {n_in} live · clock: {snap['clock_source']}")
+    st.caption(f"Updated {snap['fetched_central']} · {n_in} live · clock: {snap['clock_source']}")
     if snap.get("clock_estimated") and n_in:
         why = "; ".join(f"{name}: {result}" for name, result in snap.get("clock_attempts", []))
         how = "from kickoff times (accurate to roughly ±10% of a game)" if "kickoff" in snap["clock_source"] else "as half over"
