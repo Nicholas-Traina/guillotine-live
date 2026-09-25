@@ -4,6 +4,8 @@ Live Guillotine standings page.   Start with:  start_live_view.bat   (or:  strea
 Needs live_inputs_<season>_wk<week>.json (the model's projections). "refresh_live_inputs.py" rewrites it hourly;
 "Guillotine Week Projection 5.ipynb" produces the same file by hand.
 Shared settings (immune teams, cut override) live in live_config.json so every viewer sees the same thing.
+Built phone-first: team cards in a one-column grid on small screens, tabs instead of side-by-side tables,
+and the settings sidebar starts collapsed.
 """
 import os
 
@@ -11,8 +13,17 @@ import pandas as pd
 import streamlit as st
 
 import guillotine_live as gl
+import live_cards
 
-st.set_page_config(page_title="Guillotine live", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="Guillotine live", page_icon="⚔️", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(live_cards.CSS, unsafe_allow_html=True)
+
+SORTS = {
+    "Elimination risk": (["p_eliminated", "p_last"], False),
+    "Points now": (["current"], False),
+    "Projected final": (["expected_final"], False),
+    "First-place chance": (["p_first"], False),
+}
 
 
 @st.cache_data(ttl=60)
@@ -47,7 +58,7 @@ def cached_snapshot(path, mtime, season, week, immune, k, n_sims):
     return snap
 
 
-# ---------------------------------------------------------------- sidebar
+# ---------------------------------------------------------------- sidebar (settings; collapsed by default)
 try:
     state = cached_state()
 except Exception as e:
@@ -58,6 +69,9 @@ cfg = gl.load_config()
 cfg_key = "|".join(sorted(u.lower() for u in cfg["immune_teams"])) + f"#{cfg['eliminations_override']}"      # new config -> widgets reset
 
 st.sidebar.header("Settings")
+default_view = os.environ.get("GUILLOTINE_DEFAULT_VIEW", "Cards")
+view = st.sidebar.radio("View", ["Cards", "Table"], index=0 if default_view == "Cards" else 1, horizontal=True)
+sort_by = st.sidebar.selectbox("Sort by", list(SORTS), index=0)
 season = st.sidebar.number_input("Season", value=state["season"], step=1, format="%d")
 week = st.sidebar.number_input("Week", value=state["week"], min_value=1, max_value=18, step=1)
 refresh = st.sidebar.slider("Refresh every (seconds)", 10, 120, 30, step=5)
@@ -75,7 +89,6 @@ inputs = cached_inputs(path, mtime)
 owners = sorted((inputs["owners"][str(r)] for r in inputs["alive_roster_ids"]), key=str.lower)
 lower_owners = [o.lower() for o in owners]
 hl = cfg["highlight_default"].lower()
-my_team = st.sidebar.selectbox("My team (highlighted)", ["-"] + owners, index=(1 + lower_owners.index(hl)) if hl in lower_owners else 0)
 immune_default = [o for o in owners if o.lower() in {u.lower() for u in cfg["immune_teams"]}]
 immune = st.sidebar.multiselect("Immune teams (can't be eliminated)", owners, default=immune_default, key=f"immune_{cfg_key}")
 default_k = int(inputs.get("eliminations_by_week", {}).get(str(int(week)), 1))
@@ -86,6 +99,11 @@ age = gl.inputs_age_minutes(inputs)
 age_txt = f" ({age / 60:.1f} h ago)" if age is not None and age >= 90 else (f" ({age:.0f} min ago)" if age is not None else "")
 st.sidebar.caption(f"Projections: {os.path.basename(path)}\n\ngenerated {inputs.get('generated_at', '?')}{age_txt}")
 st.sidebar.caption("Immune teams and the cut count are shared settings (live_config.json). Changing them here only affects your own view.")
+
+# ---------------------------------------------------------------- header + "my team" (top of the page, not hidden in the sidebar)
+st.markdown(f"### ⚔️ Guillotine · week {int(week)}")
+my_team = st.selectbox("★ My team", ["-"] + owners, index=(1 + lower_owners.index(hl)) if hl in lower_owners else 0)
+st.caption(f"{k} team{'s' if k != 1 else ''} eliminated this week" + (f" · 🛡 immune: {', '.join(immune)}" if immune else ""))
 
 
 # ---------------------------------------------------------------- live panel
@@ -103,7 +121,7 @@ def live_panel():
     s = snap["standings"].copy()
     games = snap["games"]
     n_in = len({frozenset((t, g["opponent"])) for t, g in games.items() if g["state"] == "in"})
-    st.caption(f"Updated {snap['fetched_at']}  ·  refreshes every {refresh}s  ·  game clock: {snap['clock_source']}  ·  {n_in} game(s) in progress")
+    st.caption(f"Updated {snap['fetched_at'][11:]} · {n_in} live · clock: {snap['clock_source']}")
     if snap.get("clock_estimated") and n_in:
         why = "; ".join(f"{name}: {result}" for name, result in snap.get("clock_attempts", []))
         how = "from kickoff times (accurate to roughly ±10% of a game)" if "kickoff" in snap["clock_source"] else "as half over"
@@ -119,65 +137,77 @@ def live_panel():
                 f"hourly refresh: {', '.join(pid for pid, _ in missing)}")
 
     s["rank_now"] = s["current"].rank(ascending=False, method="min").astype(int)
-    s["team"] = [("★ " if o == my_team else "") + ("🛡 " if imm else "") + o for o, imm in zip(s["owner"], s["immune"])]
-    s["status"] = ["LOCKED" if lk else ("immune" if imm else "") for lk, imm in zip(s["locked"], s["immune"])]
-    s = s.sort_values(["p_eliminated", "p_last"], ascending=False).reset_index(drop=True)
+    s["rank_tied"] = s.groupby("rank_now")["rank_now"].transform("size") > 1
+    cols_, asc = SORTS[sort_by]
+    s = s.sort_values(cols_, ascending=asc).reset_index(drop=True)
 
-    pct = st.column_config.ProgressColumn
-    cols = {
-        "rank_now": st.column_config.NumberColumn("Rank now", format="%d", help="Rank by points so far"),
-        "team": "Team",
-        "current": st.column_config.NumberColumn("Points", format="%.1f"),
-        "expected_final": st.column_config.NumberColumn("Projected final", format="%.1f"),
-        "sd_remaining": st.column_config.NumberColumn("± (1 sd)", format="%.1f", help="Uncertainty in the points still to come"),
-        "done": pct("Game time done", format="%.0f%%", min_value=0, max_value=100, help="Average share of the starters' games already played"),
-        "p_eliminated": pct(f"P(eliminated, bottom {snap['k']})" if snap["k"] > 1 else "P(eliminated)", format="%.1f%%", min_value=0, max_value=100),
-        "p_last": pct("P(last)", format="%.1f%%", min_value=0, max_value=100),
-        "p_second_last": pct("P(2nd last)", format="%.1f%%", min_value=0, max_value=100),
-        "p_first": pct("P(first)", format="%.1f%%", min_value=0, max_value=100),
-        "status": "Status",
-    }
-    s["done"] = s["progress"] * 100
-    for c in ("p_eliminated", "p_last", "p_second_last", "p_first"):
-        s[c] = s[c] * 100
-    show = ["rank_now", "team", "current", "expected_final", "sd_remaining", "done", "p_eliminated", "p_last"]
-    if snap["k"] > 1:
-        show.append("p_second_last")
-    show += ["p_first", "status"]
-    st.dataframe(s[show], hide_index=True, width="stretch", column_config={c: cols[c] for c in show}, height=min(880, 40 + 35 * len(s)))
+    tab_stand, tab_detail, tab_games = st.tabs(["Standings", "Team detail", "NFL games"])
 
-    left, right = st.columns([1, 1])
-    with left:
-        st.subheader("NFL games")
-        seen, rows = set(), []
-        for t, g in games.items():
-            key = frozenset((t, g["opponent"]))
-            if key in seen:
-                continue
-            seen.add(key)
-            away, home = (g["opponent"], t) if g["home"] else (t, g["opponent"])
-            sc = f"{g['opp_score'] if g['home'] else g['score']}-{g['score'] if g['home'] else g['opp_score']}" if g["score"] is not None else ""
-            rows.append({"Game": f"{away} @ {home}", "Status": g["detail"], "Score (away-home)": sc, "_o": {"in": 0, "pre": 1, "post": 2}[g["state"]], "_k": g["kickoff"] or ""})
-        gdf = pd.DataFrame(rows).sort_values(["_o", "_k"]).drop(columns=["_o", "_k"])
-        st.dataframe(gdf, hide_index=True, width="stretch", height=min(600, 40 + 35 * len(gdf)))
-    with right:
-        st.subheader("Team detail")
+    with tab_stand:
+        if view == "Cards":
+            st.markdown(live_cards.cards_html(s, snap["k"], my_team), unsafe_allow_html=True)
+        else:
+            t = s.copy()
+            t["team"] = [("★ " if o == my_team else "") + ("🛡 " if imm else "") + o for o, imm in zip(t["owner"], t["immune"])]
+            t["status"] = ["LOCKED" if lk else ("immune" if imm else "") for lk, imm in zip(t["locked"], t["immune"])]
+            t["done"] = t["progress"] * 100
+            for c in ("p_eliminated", "p_last", "p_second_last", "p_first"):
+                t[c] = t[c] * 100
+            pct = st.column_config.ProgressColumn
+            cols = {
+                "rank_now": st.column_config.NumberColumn("Rank now", format="%d", help="Rank by points so far"),
+                "team": "Team",
+                "current": st.column_config.NumberColumn("Points", format="%.1f"),
+                "expected_final": st.column_config.NumberColumn("Projected final", format="%.1f"),
+                "sd_remaining": st.column_config.NumberColumn("± (1 sd)", format="%.1f", help="Uncertainty in the points still to come"),
+                "done": pct("Game time done", format="%.0f%%", min_value=0, max_value=100, help="Average share of the starters' games already played"),
+                "p_eliminated": pct(f"P(eliminated, bottom {snap['k']})" if snap["k"] > 1 else "P(eliminated)", format="%.1f%%", min_value=0, max_value=100),
+                "p_last": pct("P(last)", format="%.1f%%", min_value=0, max_value=100),
+                "p_second_last": pct("P(2nd last)", format="%.1f%%", min_value=0, max_value=100),
+                "p_first": pct("P(first)", format="%.1f%%", min_value=0, max_value=100),
+                "status": "Status",
+            }
+            show = ["rank_now", "team", "current", "expected_final", "sd_remaining", "done", "p_eliminated", "p_last"]
+            if snap["k"] > 1:
+                show.append("p_second_last")
+            show += ["p_first", "status"]
+            st.dataframe(t[show], hide_index=True, width="stretch", column_config={c: cols[c] for c in show}, height=min(880, 40 + 35 * len(t)))
+
+    with tab_detail:
         options = list(s["owner"])
         default = options.index(my_team) if my_team in options else 0
         who = st.selectbox("Team", options, index=default, key="detail_team")
         rid = int(s.loc[s["owner"] == who, "roster_id"].iloc[0])
         d = snap["details"][rid].copy()
         d["fraction_left"] = d["fraction_left"] * 100
-        d = d.rename(columns={"player": "Player", "pos": "Pos", "nfl_team": "Team", "game": "Game", "pts_so_far": "Pts", "fraction_left": "% left",
-                              "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag"})
-        st.dataframe(d[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Proj remaining", "Expected final", "Flag"]],
-                     hide_index=True, width="stretch",
-                     column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Proj remaining", "Expected final")})
+        compact = pd.DataFrame({"Player": d["player"] + " (" + d["pos"] + ")", "Pts": d["pts_so_far"], "Exp. final": d["expected_final"], "Game": d["game"]})
+        st.dataframe(compact, hide_index=True, width="stretch",
+                     column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "Exp. final")})
+        with st.expander("All columns"):
+            full = d.rename(columns={"player": "Player", "pos": "Pos", "nfl_team": "Team", "game": "Game", "pts_so_far": "Pts", "fraction_left": "% left",
+                                     "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag"})
+            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Proj remaining", "Expected final", "Flag"]],
+                         hide_index=True, width="stretch",
+                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Proj remaining", "Expected final")})
+
+    with tab_games:
+        seen, rows = set(), []
+        for t_, g in games.items():
+            key = frozenset((t_, g["opponent"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            away, home = (g["opponent"], t_) if g["home"] else (t_, g["opponent"])
+            sc = f"{g['opp_score'] if g['home'] else g['score']}-{g['score'] if g['home'] else g['opp_score']}" if g["score"] is not None else ""
+            rows.append({"Game": f"{away} @ {home}", "Status": g["detail"], "Score": sc, "_o": {"in": 0, "pre": 1, "post": 2}[g["state"]], "_k": g["kickoff"] or ""})
+        gdf = pd.DataFrame(rows).sort_values(["_o", "_k"]).drop(columns=["_o", "_k"])
+        st.dataframe(gdf, hide_index=True, width="stretch", height=min(700, 40 + 35 * len(gdf)))
 
 
-st.title("⚔️ Guillotine live")
-st.markdown(f"**{int(season)} · Week {int(week)}** — {k} team(s) eliminated"
-            + (f" · immune: {', '.join(immune)}" if immune else "")
-            + "  \nExpected final = points so far + (fraction of each starter's game left × the model's projection). "
-              "Uncertainty shrinks with the square root of the game time remaining.")
 live_panel()
+
+with st.expander("How this works"):
+    st.markdown("**Projected final** = points so far + (fraction of each starter's game still to play × the model's projection). "
+                "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
+                "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
+                "Ties in points are shown as T-ranks.")
