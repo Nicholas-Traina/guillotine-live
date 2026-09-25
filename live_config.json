@@ -1,0 +1,6 @@
+{
+  "immune_teams": [],
+  "eliminations_override": 0,
+  "highlight_default": "",
+  "_help": "immune_teams: usernames that can NOT be eliminated this week (not case-sensitive). eliminations_override: 0 = use the league schedule, otherwise the number of teams cut this week. highlight_default: username to star by default (viewers can pick their own in the sidebar)."
+}

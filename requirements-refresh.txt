@@ -1,0 +1,10 @@
+# Used only by the hourly GitHub Action (refresh_live_inputs.py). Pins match the versions the model was tested with.
+requests>=2.32
+pandas>=2.2
+numpy>=2.0
+scikit-learn==1.9.1
+xgboost==3.4.1
+scipy
+matplotlib
+beautifulsoup4
+lxml

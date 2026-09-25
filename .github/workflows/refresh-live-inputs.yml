@@ -1,0 +1,48 @@
+name: refresh-live-inputs
+
+# Rebuilds the model projections (rosters, injuries, pickups) and commits them, so the hosted page stays current.
+# GitHub runs scheduled workflows on a best-effort queue: delays of 5-30+ minutes are normal.
+# Free minutes: unlimited for public repos; private repos get a monthly allowance (each run takes ~2-3 minutes),
+# so for a private repo narrow the schedule (e.g. only game days: "17 * * * 0,1,4,6").
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch: {}          # lets you press "Run workflow" by hand in the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-live-inputs
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-refresh.txt
+
+      - run: pip install -r requirements-refresh.txt
+
+      - name: Rebuild projections
+        run: python refresh_live_inputs.py
+
+      - name: Commit updated projections
+        run: |
+          git config user.name "refresh-bot"
+          git config user.email "refresh-bot@users.noreply.github.com"
+          git add live_inputs_*.json adp_cache
+          if git diff --cached --quiet; then
+            echo "nothing changed"
+          else
+            git commit -m "Refresh live projections"
+            git pull --rebase
+            git push
+          fi
