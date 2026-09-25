@@ -63,47 +63,154 @@ def fraction_left(state, period, clock_seconds):
 
 SLEEPER_STATUS = {"pre_game": "pre", "in_game": "in", "complete": "post"}
 
+# Game-clock sources, tried in order. All three are ESPN (different hostnames / feeds), because some networks
+# (cloud data centers in particular) are blocked on one but not the others.
+_ESPN_PARAMS = lambda season, week: {"week": week, "seasontype": 2, "dates": season}
+ESPN_SOURCES = [
+    ("ESPN site.api", "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard", _ESPN_PARAMS, lambda j: j["events"]),
+    ("ESPN site.web.api", "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard", _ESPN_PARAMS, lambda j: j["events"]),
+    ("ESPN cdn", "https://cdn.espn.com/core/nfl/scoreboard",
+     lambda season, week: {"xhr": 1, "limit": 50, "year": season, "week": week, "seasontype": 2}, lambda j: j["content"]["sbData"]["events"]),
+]
+NFLVERSE_GAMES = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"     # schedule with kickoff times (ET)
+NFLVERSE_TO_SLEEPER = {"LA": "LAR"}
+GAME_REAL_SECONDS = 190 * 60          # typical real-time length of an NFL game (60 game minutes + halftime + stoppages)
+ESPN_BACKOFF_SECONDS = 60             # after every ESPN source failed, don't retry for this long (keeps refreshes fast)
+_espn_state = {"until": 0.0, "reasons": []}
+_kickoff_cache = {}
 
-def fetch_game_states_sleeper(season, week):
-    """Fallback when ESPN is unavailable: Sleeper only knows pre_game / in_game / complete (no clock), so a game in
-    progress is assumed to be half over. Marked with estimated=True so the page can warn about it."""
+
+def _err_text(e):
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        return f"HTTP {e.response.status_code}"
+    return f"{type(e).__name__}: {str(e)[:60]}"
+
+
+def parse_espn_events(events):
+    """ESPN scoreboard events -> {sleeper_team: game}. Malformed events are skipped instead of failing the whole feed."""
+    games = {}
+    for ev in events:
+        try:
+            st = ev["status"]
+            comp = ev["competitions"][0]
+            teams = {c["homeAway"]: c for c in comp["competitors"]}
+            state = st["type"]["state"]
+            f = fraction_left(state, st.get("period"), st.get("clock"))
+            ab = {side: ESPN_TO_SLEEPER.get(teams[side]["team"]["abbreviation"], teams[side]["team"]["abbreviation"]) for side in ("home", "away")}
+            for side, other in (("home", "away"), ("away", "home")):
+                games[ab[side]] = {
+                    "state": state, "fraction_left": f, "detail": st["type"].get("shortDetail") or st["type"].get("detail", ""),
+                    "opponent": ab[other], "home": side == "home", "score": teams[side].get("score"), "opp_score": teams[other].get("score"),
+                    "kickoff": ev.get("date"), "estimated": False,
+                }
+        except (KeyError, IndexError, TypeError):
+            continue
+    return games
+
+
+def fetch_espn(season, week):
+    """(games or None, source name or None, [(source, 'ok' | reason it failed), ...])."""
+    attempts = []
+    if time.time() < _espn_state["until"]:
+        return None, None, [("ESPN", f"skipped for {int(_espn_state['until'] - time.time())}s after failing: " + "; ".join(_espn_state["reasons"]))]
+    for name, url, params, pick in ESPN_SOURCES:
+        try:
+            games = parse_espn_events(pick(_get(url, params=params(season, week), timeout=8)))
+            if len(games) < 8:
+                raise ValueError(f"only {len(games)} teams in the feed")
+            attempts.append((name, "ok"))
+            return games, name, attempts
+        except Exception as e:
+            attempts.append((name, _err_text(e)))
+    _espn_state["until"] = time.time() + ESPN_BACKOFF_SECONDS
+    _espn_state["reasons"] = [f"{n}: {r}" for n, r in attempts]
+    return None, None, attempts
+
+
+def _et_to_epoch(date_str, time_str):
+    """US Eastern wall-clock time ('2026-09-27', '13:00') -> UTC epoch seconds (handles daylight saving without tz data)."""
+    import calendar
+    import datetime
+    y, m, d = map(int, date_str.split("-"))
+    hh, mm = map(int, time_str.split(":")[:2])
+    local = datetime.datetime(y, m, d, hh, mm)
+
+    def nth_sunday(month, n):
+        first = datetime.date(y, month, 1)
+        return first + datetime.timedelta(days=(6 - first.weekday()) % 7 + 7 * (n - 1))
+    dst_start = datetime.datetime.combine(nth_sunday(3, 2), datetime.time(2, 0))       # 2nd Sunday of March, 2:00 local
+    dst_end = datetime.datetime.combine(nth_sunday(11, 1), datetime.time(2, 0))        # 1st Sunday of November, 2:00 local
+    offset = 4 if dst_start <= local < dst_end else 5
+    return calendar.timegm((local + datetime.timedelta(hours=offset)).timetuple())
+
+
+def fetch_kickoffs(season, week):
+    """{sleeper_team: kickoff UTC epoch} from the nflverse schedule (cached for 6 hours). {} if unavailable."""
+    key = (season, week)
+    hit = _kickoff_cache.get(key)
+    if hit and time.time() - hit[0] < 6 * 3600:
+        return hit[1]
+    import csv
+    import io
+    out = {}
+    try:
+        r = requests.get(NFLVERSE_GAMES, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        for row in csv.DictReader(io.StringIO(r.text)):
+            if row["season"] == str(season) and row["week"] == str(week) and row.get("gameday") and row.get("gametime"):
+                t = _et_to_epoch(row["gameday"], row["gametime"])
+                for team in (row["home_team"], row["away_team"]):
+                    out[NFLVERSE_TO_SLEEPER.get(team, team)] = t
+    except Exception:
+        out = {}
+    _kickoff_cache[key] = (time.time(), out)
+    return out
+
+
+def fetch_game_states_estimated(season, week):
+    """
+    Fallback when no ESPN feed is reachable. Sleeper's schedule says pre_game / in_game / complete but has no clock, so a
+    game in progress is placed using the nflverse kickoff time: fraction played ~ time since kickoff / 190 minutes
+    (roughly +/-10% of a game). Without kickoff times a game in progress is assumed to be half over.
+    Returns (games, used_kickoff_times).
+    """
+    kickoffs = fetch_kickoffs(season, week)
+    now = time.time()
     games = {}
     for g in _get(f"https://api.sleeper.com/schedule/nfl/regular/{season}"):
         if g.get("week") != week:
             continue
         state = SLEEPER_STATUS.get(g.get("status"), "pre")
-        f = {"pre": 1.0, "in": 0.5, "post": 0.0}[state]
+        ko = kickoffs.get(g["home"]) or kickoffs.get(g["away"])
+        if state == "pre":
+            f, detail = 1.0, "not started"
+        elif state == "post":
+            f, detail = 0.0, "final"
+        elif ko:
+            played = min(max((now - ko) / GAME_REAL_SECONDS, 0.03), 0.97)
+            f, detail = 1.0 - played, f"in progress (~{played * 100:.0f}% played, estimated)"
+        else:
+            f, detail = 0.5, "in progress (clock unavailable)"
+        iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ko)) if ko else g.get("date")
         for team, opp, home in ((g["home"], g["away"], True), (g["away"], g["home"], False)):
-            games[team] = {"state": state, "fraction_left": f, "detail": {"pre": "not started", "in": "in progress (clock unavailable)", "post": "final"}[state],
-                           "opponent": opp, "home": home, "score": None, "opp_score": None, "kickoff": g.get("date"), "estimated": True}
-    return games
+            games[team] = {"state": state, "fraction_left": f, "detail": detail, "opponent": opp, "home": home,
+                           "score": None, "opp_score": None, "kickoff": iso, "estimated": True}
+    return games, bool(kickoffs)
+
+
+def fetch_game_states_detailed(season, week):
+    """(games, {'source': str, 'estimated': bool, 'attempts': [(source, result), ...]})."""
+    games, source, attempts = fetch_espn(season, week)
+    if games:
+        return games, {"source": source, "estimated": False, "attempts": attempts}
+    games, used_kickoffs = fetch_game_states_estimated(season, week)
+    return games, {"source": "kickoff-time estimate" if used_kickoffs else "Sleeper status only (in-progress games assumed half over)",
+                   "estimated": True, "attempts": attempts}
 
 
 def fetch_game_states(season, week):
-    """{sleeper_team_abbr: {state, fraction_left, detail, opponent, home, score, opp_score, kickoff, estimated}} for the week.
-    Uses the ESPN scoreboard (has the game clock); falls back to Sleeper's coarser status if ESPN fails."""
-    try:
-        data = _get(ESPN_SCOREBOARD, params={"week": week, "seasontype": 2, "dates": season})
-        if not data.get("events"):
-            raise ValueError("ESPN returned no games")
-    except Exception:
-        return fetch_game_states_sleeper(season, week)
-    games = {}
-    for ev in data.get("events", []):
-        st = ev["status"]
-        comp = ev["competitions"][0]
-        teams = {c["homeAway"]: c for c in comp["competitors"]}
-        f = fraction_left(st["type"]["state"], st.get("period"), st.get("clock"))
-        for side, other in (("home", "away"), ("away", "home")):
-            abbr = teams[side]["team"]["abbreviation"]
-            abbr = ESPN_TO_SLEEPER.get(abbr, abbr)
-            games[abbr] = {
-                "state": st["type"]["state"], "fraction_left": f, "detail": st["type"].get("shortDetail") or st["type"].get("detail", ""),
-                "opponent": ESPN_TO_SLEEPER.get(teams[other]["team"]["abbreviation"], teams[other]["team"]["abbreviation"]),
-                "home": side == "home", "score": teams[side].get("score"), "opp_score": teams[other].get("score"), "kickoff": ev.get("date"),
-                "estimated": False,
-            }
-    return games
+    """{sleeper_team_abbr: {state, fraction_left, detail, opponent, home, score, opp_score, kickoff, estimated}} for the week."""
+    return fetch_game_states_detailed(season, week)[0]
 
 
 DEFAULT_CONFIG = {"immune_teams": [], "eliminations_override": 0, "highlight_default": ""}
@@ -227,14 +334,13 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
 def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000):
     """Everything the page needs in one call."""
     matchups = fetch_matchups(league_id, week)
-    games = fetch_game_states(season, week)
+    games, clock = fetch_game_states_detailed(season, week)
     teams, details = live_team_table(matchups, inputs, games)
     if k is None:
         k = int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
     standings = simulate_standings(teams, k, immune_owners, n_sims)
-    estimated = any(g.get("estimated") for g in games.values())
     return {"standings": standings, "details": details, "games": games, "k": k,
-            "clock_source": "Sleeper status only (no game clock - games in progress assumed half done)" if estimated else "ESPN scoreboard",
+            "clock_source": clock["source"], "clock_estimated": clock["estimated"], "clock_attempts": clock["attempts"],
             "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
 

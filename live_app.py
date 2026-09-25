@@ -104,8 +104,11 @@ def live_panel():
     games = snap["games"]
     n_in = len({frozenset((t, g["opponent"])) for t, g in games.items() if g["state"] == "in"})
     st.caption(f"Updated {snap['fetched_at']}  ·  refreshes every {refresh}s  ·  game clock: {snap['clock_source']}  ·  {n_in} game(s) in progress")
-    if "Sleeper" in snap["clock_source"]:
-        st.warning("ESPN's game clock is unavailable, so live games are assumed to be half over. Probabilities are approximate.")
+    if snap.get("clock_estimated") and n_in:
+        why = "; ".join(f"{name}: {result}" for name, result in snap.get("clock_attempts", []))
+        how = "from kickoff times (accurate to roughly ±10% of a game)" if "kickoff" in snap["clock_source"] else "as half over"
+        st.warning(f"The live game clock can't be reached from this server, so games in progress are estimated {how}. "
+                   f"Probabilities are approximate. Details: {why or 'no source answered'}")
     if age is not None and age > 180:
         st.warning(f"The model projections are {age / 60:.1f} hours old (the hourly refresh may have stopped). Live scores are current.")
 
