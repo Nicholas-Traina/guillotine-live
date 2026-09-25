@@ -26,6 +26,8 @@ import warnings
 
 import requests
 
+import guillotine_live as gl
+import return_model as rm
 import sleeper_projections as sp
 
 warnings.filterwarnings("ignore")
@@ -80,7 +82,13 @@ def load_cells():
         hits = [s for s in sources if marker in s]
         if len(hits) != 1:
             raise RuntimeError(f"expected exactly one notebook cell containing {marker!r} ({name}), found {len(hits)}")
-        picked.append((name, hits[0]))
+        src = hits[0]
+        if name == "pipeline":                            # keep return / special-teams touchdowns in the stats cache for the return-points model
+            marker_ = 'USAGE_STAT_KEYS = ("gp", '
+            if src.count(marker_) != 1:
+                raise RuntimeError("could not find USAGE_STAT_KEYS in the pipeline cell to add st_td")
+            src = src.replace(marker_, marker_ + '"st_td", ', 1)
+        picked.append((name, src))
     return picked
 
 
@@ -204,23 +212,39 @@ def refresh():
             n_pool = 0
             log("WARNING: free-agent pool skipped (rostered players are still projected):\n" + traceback.format_exc(limit=3))
         rule_note = ""
-        try:                                              # owner's rule: model for players averaging > 2 return pts/game this season, else Sleeper
+        try:                                              # three projections per player: model / Sleeper / Sleeper + return points
             scoring = ns["get_league_scoring"](season)
             sleeper = sp.fetch_sleeper_projections(season, week)
             if sp.usable_count(sleeper) < 300 or not scoring:
                 raise RuntimeError(f"Sleeper projections unavailable ({sp.usable_count(sleeper)} players with points) or league scoring missing")
-            ret = sp.return_points_per_game_so_far(ns["_WEEKLY_STATS_CACHE"], scoring, season, week)
-            counts = sp.apply_rule(payload["players"], sleeper, scoring, ret)
-            n_start = sum(1 for v in payload["players"].values() if v.get("projection_source") == "sleeper" and v.get("starter_at_export"))
-            payload["projection_rule"] = {"rule": f"model if the player averages more than {sp.RETURN_PPG_THRESHOLD:g} return-yardage points per game "
-                                                  "so far this season, else Sleeper; a returner whose model projection is below Sleeper's gets Sleeper's plus his return "
-                                                  "points per game, so nothing is below Sleeper's (model when Sleeper has no projection; bye / Out / IR stay 0)",
-                                          "return_ppg_threshold": sp.RETURN_PPG_THRESHOLD, **counts}
-            rule_note = (f" | Sleeper projection used for {counts['sleeper']} players ({n_start} starters at export), "
-                         f"{counts['returner_kept_model']} returners kept on the model, "
-                         f"{counts['sleeper_plus_returns']} returners raised to Sleeper + return ppg")
+            cache = ns["_WEEKLY_STATS_CACHE"]
+            weights = {y: rm.weights_for(ns["get_league_scoring"](y)) for y in range(2021, season + 1)}
+            ret_pred = {}
+            try:                                          # return points = return yards x league value + return TDs, from yards/game to date and the week
+                frame = rm.build_training_frame(cache, weights, range(2021, season + 1), before=(season, week))
+                rmodel = rm.fit(frame)
+                pids = [pid for pid in payload["players"] if str(pid).isdigit()]
+                ret_pred = rm.predict(rmodel, rm.features_for(cache, weights, season, week, pids))
+                payload["return_model"] = {"features": rm.SPEC_FEATURES, "training_player_games": int(len(frame)),
+                                           "seasons": [2021, season], "share_of_games_with_return_points": round(float((frame["ret_pts"] > 0).mean()), 4)}
+            except Exception:
+                ret_pred = None
+                log("WARNING: return-points model failed; 'Sleeper + return points' is unavailable this refresh (the page falls back to Sleeper):\n"
+                    + traceback.format_exc(limit=3))
+            counts = sp.add_return_points(payload["players"], sleeper, scoring, ret_pred or {})
+            if ret_pred is None:
+                for v in payload["players"].values():
+                    v["sleeper_plus_returns"] = None
+            for v in payload["players"].values():         # projected_points = the default projection, for readers of the file that don't choose
+                v["projected_points"], v["projection_source"] = gl.pick_projection(v, gl.DEFAULT_PROJECTION)
+            payload["projection_default"] = gl.DEFAULT_PROJECTION
+            payload["projection_choices"] = gl.PROJECTION_LABELS
+            payload["projection_counts"] = counts
+            top = sorted((v for v in payload["players"].values() if v.get("return_pts_projection")), key=lambda v: -v["return_pts_projection"])[:3]
+            rule_note = (f" | projections: {counts['with_sleeper']} with Sleeper, {counts['no_sleeper_projection']} model-only; return points predicted for "
+                         f"{counts['with_return_points']} (top: {', '.join(v['name'] + ' ' + format(v['return_pts_projection'], '.1f') for v in top)})")
         except Exception:
-            log("WARNING: Sleeper-projection rule skipped, model projections used for everyone:\n" + traceback.format_exc(limit=3))
+            log("WARNING: Sleeper projections skipped, model projections only:\n" + traceback.format_exc(limit=3))
         tmp_final = final_path + ".tmp"
         with open(tmp_final, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)

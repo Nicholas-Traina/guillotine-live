@@ -68,10 +68,10 @@ def show_chart(chart):
 
 
 @st.cache_data(ttl=15, show_spinner=False)
-def cached_snapshot(path, mtime, season, week, immune, k, n_sims):
+def cached_snapshot(path, mtime, season, week, immune, k, n_sims, projection):
     """One computation shared by every viewer (at most one Sleeper/ESPN fetch + simulation per 15 seconds)."""
     inputs = cached_inputs(path, mtime)
-    return gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=list(immune), k=k, n_sims=n_sims)
+    return gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=list(immune), k=k, n_sims=n_sims, projection=projection)
 
 
 # ---------------------------------------------------------------- sidebar (settings; collapsed by default)
@@ -88,6 +88,10 @@ st.sidebar.header("Settings")
 default_view = os.environ.get("GUILLOTINE_DEFAULT_VIEW", "Cards")
 view = st.sidebar.radio("View", ["Cards", "Table"], index=0 if default_view == "Cards" else 1, horizontal=True)
 sort_by = st.sidebar.selectbox("Sort by", list(SORTS), index=0)
+proj_keys = list(gl.PROJECTION_LABELS)
+projection = st.sidebar.selectbox("Projection", proj_keys, index=proj_keys.index(cfg["projection_source"]),
+                                  format_func=lambda key: gl.PROJECTION_LABELS[key], key=f"proj_{cfg['projection_source']}",
+                                  help="Which projection drives the expected finals and odds. Set the default for everyone in live_config.json.")
 season = st.sidebar.number_input("Season", value=state["season"], step=1, format="%d")
 week = st.sidebar.number_input("Week", value=state["week"], min_value=1, max_value=18, step=1)
 refresh = st.sidebar.slider("Refresh every (seconds)", 10, 120, 30, step=5)
@@ -119,14 +123,15 @@ st.sidebar.caption("Immune teams and the cut count are shared settings (live_con
 # ---------------------------------------------------------------- header + "my team" (top of the page, not hidden in the sidebar)
 st.markdown(f"### ⚔️ Guillotine · week {int(week)}")
 my_team = st.selectbox("★ My team", ["-"] + owners, index=(1 + lower_owners.index(hl)) if hl in lower_owners else 0)
-st.caption(f"{k} team{'s' if k != 1 else ''} eliminated this week" + (f" · 🛡 immune: {', '.join(immune)}" if immune else ""))
+st.caption(f"{k} team{'s' if k != 1 else ''} eliminated this week" + (f" · 🛡 immune: {', '.join(immune)}" if immune else "")
+           + f" · projection: {gl.PROJECTION_LABELS[projection]}")
 
 
 # ---------------------------------------------------------------- live panel
 @st.fragment(run_every=f"{refresh}s")
 def live_panel():
     try:
-        snap = cached_snapshot(path, mtime, int(season), int(week), tuple(sorted(immune)), k, n_sims)
+        snap = cached_snapshot(path, mtime, int(season), int(week), tuple(sorted(immune)), k, n_sims, projection)
         st.session_state["last_snap"] = snap
     except Exception as e:
         snap = st.session_state.get("last_snap")
@@ -202,10 +207,11 @@ def live_panel():
         with st.expander("All columns"):
             full = d.rename(columns={"player": "Player", "pos": "Pos", "nfl_team": "Team", "game": "Game", "pts_so_far": "Pts", "fraction_left": "% left",
                                      "projection": "Full-game proj", "expected_remaining": "Proj remaining", "expected_final": "Expected final", "flag": "Flag",
-                                     "source": "Source", "model_projection": "Model proj", "sleeper_projection": "Sleeper proj"})
-            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Source", "Model proj", "Sleeper proj", "Proj remaining", "Expected final", "Flag"]],
+                                     "source": "Source", "model_projection": "Model", "sleeper_projection": "Sleeper", "return_pts": "Return pts",
+                                     "sleeper_plus_returns": "Sleeper + ret"})
+            st.dataframe(full[["Player", "Pos", "Team", "Game", "Pts", "% left", "Full-game proj", "Source", "Model", "Sleeper", "Return pts", "Sleeper + ret", "Proj remaining", "Expected final", "Flag"]],
                          hide_index=True, width="stretch",
-                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Model proj", "Sleeper proj", "Proj remaining", "Expected final")})
+                         column_config={c: st.column_config.NumberColumn(c, format="%.1f") for c in ("Pts", "% left", "Full-game proj", "Model", "Sleeper", "Return pts", "Sleeper + ret", "Proj remaining", "Expected final")})
 
     with tab_games:
         seen, rows = set(), []
@@ -251,10 +257,11 @@ def live_panel():
 live_panel()
 
 with st.expander("How this works"):
-    st.markdown("**Projected final** = points so far + (fraction of each starter's game still to play × the model's projection). "
-                "Projections come from the model for players who average more than 2 points per game from return yardage this season (Sleeper barely counts return yardage) and from Sleeper for everyone else; "
-                "if a returner's model number is below Sleeper's, Sleeper's plus his average return points per game is used, so no projection is below Sleeper's. "
-                "'All columns' under Team detail shows both numbers. "
+    st.markdown("**Projected final** = points so far + (fraction of each starter's game still to play × his projection). "
+                "There are three projections (sidebar → Projection; the default is set in live_config.json): the **Model**, **Sleeper**'s own "
+                "(scored with this league's rules), and **Sleeper + return points** — Sleeper's number with its own return yardage taken out "
+                "plus a model of the return points (return yards and return touchdowns) a player will score, from his return yards per game so far "
+                "this season and the week. Team detail → All columns shows every player's number under each. "
                 "A defense that's mid-game is held at its current score. **±** is the uncertainty in the points still to come and shrinks as games finish. "
                 "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
                 "Ties in points are shown as T-ranks.")

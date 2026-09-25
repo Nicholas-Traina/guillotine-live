@@ -259,7 +259,23 @@ def inputs_generated_text(inputs):
     return str(inputs.get("generated_at", "?"))
 
 
-DEFAULT_CONFIG = {"immune_teams": [], "eliminations_override": 0, "highlight_default": ""}
+# The three projections the page can use (the export carries all three for every player)
+PROJECTION_LABELS = {"sleeper_returns": "Sleeper + return points", "sleeper": "Sleeper", "model": "Model"}
+DEFAULT_PROJECTION = "sleeper_returns"
+
+
+def pick_projection(info, choice=None):
+    """(value, source) of one player's projection under `choice`. Falls back Sleeper + return points -> Sleeper -> model, so a
+    player Sleeper doesn't project (or an older export without the new fields) still gets a number."""
+    choice = choice if choice in PROJECTION_LABELS else DEFAULT_PROJECTION
+    if choice == "sleeper_returns" and info.get("sleeper_plus_returns") is not None:
+        return float(info["sleeper_plus_returns"]), "sleeper+returns"
+    if choice in ("sleeper_returns", "sleeper") and info.get("sleeper_projection") is not None:
+        return float(info["sleeper_projection"]), "sleeper"
+    return float(info.get("model_projection", info.get("projected_points", 0.0)) or 0.0), "model"
+
+
+DEFAULT_CONFIG = {"immune_teams": [], "eliminations_override": 0, "highlight_default": "", "projection_source": DEFAULT_PROJECTION}
 
 
 def load_config(folder=HERE):
@@ -273,6 +289,8 @@ def load_config(folder=HERE):
     cfg["immune_teams"] = [str(u) for u in (cfg["immune_teams"] or [])]
     cfg["eliminations_override"] = int(cfg["eliminations_override"] or 0)
     cfg["highlight_default"] = str(cfg["highlight_default"] or "")
+    if cfg["projection_source"] not in PROJECTION_LABELS:
+        cfg["projection_source"] = DEFAULT_PROJECTION
     return cfg
 
 
@@ -301,8 +319,9 @@ def load_inputs(path):
 
 
 # ------------------------------------------------------------------ the math
-def starter_table(matchup, inputs, games):
-    """One row per starter of one team: points so far, game state, expected remaining and expected final."""
+def starter_table(matchup, inputs, games, projection=None):
+    """One row per starter of one team: points so far, game state, expected remaining and expected final.
+    `projection` is 'sleeper_returns' | 'sleeper' | 'model' (default: DEFAULT_PROJECTION)."""
     players = inputs["players"]
     sigma = inputs["sigma_by_position"]
     global_sigma = inputs.get("global_rmse", 7.5)
@@ -320,7 +339,7 @@ def starter_table(matchup, inputs, games):
         team = info.get("team")
         g = games.get(team)
         f = g["fraction_left"] if g else 0.0                   # no game this week (bye) -> nothing left to play
-        proj = float(info.get("projected_points") or 0.0)
+        proj, source = pick_projection(info, projection)
         sig = float(sigma.get(info.get("position"), global_sigma))
         exp_rem = f * proj
         flag = info.get("availability", "")
@@ -335,13 +354,14 @@ def starter_table(matchup, inputs, games):
             "pts_so_far": float(pts or 0.0), "fraction_left": f, "projection": proj,
             "expected_remaining": exp_rem, "expected_final": float(pts or 0.0) + exp_rem,
             "var_remaining": (sig ** 2) * f if proj > 0 else 0.0, "flag": flag,
-            "source": info.get("projection_source", "model"), "model_projection": info.get("model_projection", proj),
-            "sleeper_projection": info.get("sleeper_projection"),
+            "source": source, "model_projection": info.get("model_projection", info.get("projected_points")),
+            "sleeper_projection": info.get("sleeper_projection"), "return_pts": info.get("return_pts_projection"),
+            "sleeper_plus_returns": info.get("sleeper_plus_returns"),
         })
     return pd.DataFrame(rows)
 
 
-def live_team_table(matchups, inputs, games):
+def live_team_table(matchups, inputs, games, projection=None):
     """One row per live team (teams with an empty roster were already eliminated)."""
     owners = inputs["owners"]
     out, details = [], {}
@@ -349,7 +369,7 @@ def live_team_table(matchups, inputs, games):
         if not m.get("players"):
             continue
         rid = m["roster_id"]
-        st = starter_table(m, inputs, games)
+        st = starter_table(m, inputs, games, projection)
         details[rid] = st
         cur = float(m.get("points") or 0.0)
         mu = float(st["expected_remaining"].sum()) if len(st) else 0.0
@@ -387,15 +407,15 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
     return t
 
 
-def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000):
+def live_snapshot(league_id, season, week, inputs, immune_owners=(), k=None, n_sims=20000, projection=None):
     """Everything the page needs in one call."""
     matchups = fetch_matchups(league_id, week)
     games, clock = fetch_game_states_detailed(season, week)
-    teams, details = live_team_table(matchups, inputs, games)
+    teams, details = live_team_table(matchups, inputs, games, projection)
     if k is None:
         k = int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
     standings = simulate_standings(teams, k, immune_owners, n_sims)
-    return {"standings": standings, "details": details, "games": games, "k": k,
+    return {"standings": standings, "details": details, "games": games, "k": k, "projection": projection or DEFAULT_PROJECTION,
             "clock_source": clock["source"], "clock_estimated": clock["estimated"], "clock_attempts": clock["attempts"],
             "fetched_at": time.strftime("%Y-%m-%d %H:%M:%S"), "fetched_epoch": time.time(),
             "fetched_central": format_central(time.time())}

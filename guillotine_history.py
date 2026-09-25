@@ -127,7 +127,8 @@ class Sampler(threading.Thread):
         inputs = gl.load_inputs(path)
         cfg = gl.load_config()
         k = cfg["eliminations_override"] or int(inputs.get("eliminations_by_week", {}).get(str(week), 1))
-        snap = gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=cfg["immune_teams"], k=k, n_sims=self.n_sims)
+        snap = gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=cfg["immune_teams"], k=k, n_sims=self.n_sims,
+                                projection=cfg["projection_source"])
         rec = self.recorders.setdefault((season, week), Recorder(season, week, self.folder))
         return "recorded" if rec.record(snap) else "idle"
 
