@@ -9,6 +9,13 @@ import html
 
 CSS = """<style>
 div[data-testid="stMainBlockContainer"], .block-container { padding-top: 1.4rem !important; }
+/* label the sidebar's double-arrow button: "Settings" when closed, "Hide" when open */
+button[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapseButton"] button {
+    width: auto !important; height: auto !important; padding: .25rem .7rem .25rem .45rem !important; border-radius: 999px !important;
+    border: 1px solid rgba(128,128,128,.45) !important; background: rgba(128,128,128,.14) !important;
+    display: inline-flex !important; align-items: center; gap: .2rem; }
+button[data-testid="stExpandSidebarButton"]::after { content: "Settings"; font-size: .85rem; font-weight: 600; color: inherit; }
+[data-testid="stSidebarCollapseButton"] button::after { content: "Hide"; font-size: .85rem; font-weight: 600; color: inherit; }
 .gg { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: .7rem; margin: .25rem 0 1rem; }
 .gc { border: 1px solid rgba(128,128,128,.35); border-left: 6px solid rgba(128,128,128,.5); border-radius: 10px;
       padding: .7rem .85rem; background: rgba(128,128,128,.07); }
