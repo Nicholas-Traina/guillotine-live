@@ -18,12 +18,14 @@ concurrency:
 
 jobs:
   refresh:
-    runs-on: ubuntu-latest
+    # Pinned on purpose: "ubuntu-latest" moves to Ubuntu 26 on Oct 19, 2026, which would change the job's
+    # environment mid-season. Switch to ubuntu-26.04 later, after a test run.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
