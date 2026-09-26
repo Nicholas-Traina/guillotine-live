@@ -1,7 +1,7 @@
 """
 Live Guillotine standings page.   Start with:  start_live_view.bat   (or:  streamlit run live_app.py)
 
-Needs live_inputs_<season>_wk<week>.json (the model's projections). "refresh_live_inputs.py" rewrites it hourly;
+Needs live_inputs_<season>_wk<week>.json (the model's projections). "refresh_live_inputs.py" rewrites it once a day (about 11 AM Central);
 "Guillotine Week Projection 5.ipynb" produces the same file by hand.
 Shared settings (immune teams, cut override) live in live_config.json so every viewer sees the same thing.
 Built phone-first: team cards in a one-column grid on small screens, tabs instead of side-by-side tables,
@@ -19,6 +19,8 @@ import live_charts
 
 st.set_page_config(page_title="Guillotine live", page_icon="⚔️", layout="wide", initial_sidebar_state="collapsed")
 st.markdown(live_cards.CSS, unsafe_allow_html=True)
+
+REFRESH_STALE_MINUTES = 27 * 60      # projections refresh once a day (about 11 AM Central): warn only once a whole day plus 3 hours of slack has been missed
 
 SORTS = {
     "Elimination risk": (["p_eliminated", "p_last"], False),
@@ -102,7 +104,7 @@ path = gl.find_inputs_file(int(season), int(week))
 if not path:
     st.title("⚔️ Guillotine live")
     st.error(f"No `live_inputs_{int(season)}_wk{int(week)}.json` next to this app yet. It is created by `refresh_live_inputs.py` "
-             f"(hourly) or by **Guillotine Week Projection 5.ipynb**.")
+             f"(daily) or by **Guillotine Week Projection 5.ipynb**.")
     st.stop()
 mtime = os.path.getmtime(path)
 inputs = cached_inputs(path, mtime)
@@ -149,14 +151,15 @@ def live_panel():
         how = "from kickoff times (accurate to roughly ±10% of a game)" if "kickoff" in snap["clock_source"] else "as half over"
         st.warning(f"The live game clock can't be reached from this server, so games in progress are estimated {how}. "
                    f"Probabilities are approximate. Details: {why or 'no source answered'}")
-    if age is not None and age > 180:
-        st.warning(f"The model projections are {age / 60:.1f} hours old (the hourly refresh may have stopped). Live scores are current.")
+    if age is not None and age > REFRESH_STALE_MINUTES:
+        st.warning(f"The model projections are {age / 60:.1f} hours old. They refresh once a day at about 11 AM Central, so today's refresh may have "
+                   f"failed. Live scores are current.")
 
     # starters put in after the last projection refresh have no model projection yet
     missing = sorted({(r["player_id"], r["player"]) for d in snap["details"].values() for _, r in d.iterrows() if r["flag"] == "NOT IN EXPORT"})
     if missing:
         st.info(f"{len(missing)} starter(s) were added since the last projection refresh and use the average starter projection until the next "
-                f"hourly refresh: {', '.join(pid for pid, _ in missing)}")
+                f"daily refresh (about 11 AM Central): {', '.join(pid for pid, _ in missing)}")
 
     s["rank_now"] = s["current"].rank(ascending=False, method="min").astype(int)
     s["rank_tied"] = s.groupby("rank_now")["rank_now"].transform("size") > 1
