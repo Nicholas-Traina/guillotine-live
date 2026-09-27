@@ -35,16 +35,26 @@ def trend_chart(df, breaks=(), plot_height=210):
     # Streamlit fits the whole chart (axes + legend) into one height: leave room for the legend rows so the plot area stays tall
     height = plot_height + 26 * math.ceil(n_teams / 2) + 60
     scheme = "tableau10" if n_teams <= 10 else "category20"      # tableau10 has 10 clearly different colours
+    color_scale = alt.Scale(scheme=scheme)
+    has_labels = n_teams > 5 and len(d)
+    max_hours = float(d["hours"].max()) if len(d) else 0.0
+    # end-of-line team labels sit past the last point: stretch the axis a bit so they land in the chart instead of getting clipped at the edge
+    x_scale = alt.Scale(domainMin=0, domainMax=max_hours * 1.16, nice=False) if has_labels else alt.Scale(domainMin=0)
     line = alt.Chart(d).mark_line(interpolate="monotone", strokeWidth=2.2).encode(
-        x=alt.X("hours:Q", title="Hours of live football",
+        x=alt.X("hours:Q", title="Hours of live football", scale=x_scale,
                 axis=alt.Axis(tickMinStep=0.5, format=".1f", grid=False)),
         y=alt.Y("pct:Q", title="Chance (%)", scale=alt.Scale(domainMin=0, domainMax=max(top * 1.08, 1.0), nice=True),
                 axis=alt.Axis(format=".0f")),
-        color=alt.Color("team:N", scale=alt.Scale(scheme=scheme), legend=alt.Legend(orient="bottom", title=None, columns=2)),
+        color=alt.Color("team:N", scale=color_scale, legend=alt.Legend(orient="bottom", title=None, columns=2)),
         tooltip=[alt.Tooltip("team:N", title="Team"), alt.Tooltip("pct:Q", title="Chance %", format=".1f"),
                  alt.Tooltip("clock:N", title="Time (Central)"), alt.Tooltip("hours:Q", title="Live hours", format=".2f")],
     )
     layers = [line]
+    if n_teams > 5 and len(d):
+        # with more than 5 lines the legend colours get hard to tell apart: label the two currently-highest right on the chart
+        top2 = d.sort_values("hours").groupby("team", as_index=False).tail(1).nlargest(2, "pct")
+        layers.append(alt.Chart(top2).mark_text(align="left", baseline="middle", dx=6, fontSize=11, fontWeight="bold", clip=False)
+                      .encode(x="hours:Q", y="pct:Q", text="team:N", color=alt.Color("team:N", scale=color_scale, legend=None)))
     if len(breaks):
         b = break_frame(breaks)
         layers.append(alt.Chart(b).mark_rule(strokeDash=[4, 3], color="gray", opacity=0.7).encode(x="hours:Q", tooltip=[alt.Tooltip("label:N", title="Play resumes")]))

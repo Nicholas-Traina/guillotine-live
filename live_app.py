@@ -256,24 +256,36 @@ def live_panel():
             st.caption(recorder_status_text())
         else:
             all_teams = sorted(hist["owner"].unique(), key=str.lower)
-            latest = hist[hist["epoch"] == hist["epoch"].max()].set_index("owner")
-            riskiest = [t for t in latest["p_eliminated"].sort_values(ascending=False).index if t in all_teams]
-            default = ([my_team] if my_team in all_teams else []) + [t for t in riskiest if t != my_team]
-            chosen = st.multiselect("Teams to plot", all_teams, default=default[:5], key="trend_teams")
-            if not chosen:
-                st.info("Pick at least one team above.")
-            else:
-                breaks = gh.find_breaks(hist)
+            kickoff = hist[hist["epoch"] == hist["epoch"].min()].set_index("owner")
+            breaks = gh.find_breaks(hist)
+
+            # picking (or changing) My team adds it to every already-customized chart selection, on top of whatever teams were already chosen
+            if my_team in all_teams and st.session_state.get("trend_my_team_seen") != my_team:
                 for metric in ("p_eliminated", "p_in_elim_spot", "p_first"):
-                    title, blurb = live_charts.TITLES[metric]
-                    st.markdown(f"**{title}**")
-                    st.caption(blurb)
+                    key = f"trend_teams_{metric}"
+                    if key in st.session_state and my_team not in st.session_state[key]:
+                        st.session_state[key] = st.session_state[key] + [my_team]
+                st.session_state["trend_my_team_seen"] = my_team
+
+            for metric in ("p_eliminated", "p_in_elim_spot", "p_first"):
+                title, blurb = live_charts.TITLES[metric]
+                st.markdown(f"**{title}**")
+                st.caption(blurb)
+                ranked = [t for t in kickoff[metric].sort_values(ascending=False).index if t in all_teams]
+                if my_team in all_teams:
+                    default = [my_team] + [t for t in ranked if t != my_team][:4]
+                else:
+                    default = ranked[:5]
+                chosen = st.multiselect("Teams to plot", all_teams, default=default, key=f"trend_teams_{metric}")
+                if not chosen:
+                    st.info("Pick at least one team above.")
+                else:
                     show_chart(live_charts.trend_chart(gh.plot_frame(hist, chosen, metric), breaks))
-                first, last = hist["epoch"].min(), hist["epoch"].max()
-                st.caption(f"Time only runs while an NFL game is on (dotted lines mark breaks, labelled with when play resumed, in Central time). "
-                           f"{hist['live_seconds'].max() / 3600:.1f} live hours recorded, {gl.format_central(first, seconds=False, day=True)} to "
-                           f"{gl.format_central(last, seconds=False, day=True)}. Uses the shared immune-team / cut settings. "
-                           f"History restarts if the server restarts. {recorder_status_text()}")
+            first, last = hist["epoch"].min(), hist["epoch"].max()
+            st.caption(f"Time only runs while an NFL game is on (dotted lines mark breaks, labelled with when play resumed, in Central time). "
+                       f"{hist['live_seconds'].max() / 3600:.1f} live hours recorded, {gl.format_central(first, seconds=False, day=True)} to "
+                       f"{gl.format_central(last, seconds=False, day=True)}. Uses the shared immune-team / cut settings. "
+                       f"History restarts if the server restarts. {recorder_status_text()}")
 
 
 live_panel()
