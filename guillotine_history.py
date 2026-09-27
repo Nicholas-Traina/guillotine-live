@@ -8,7 +8,13 @@ A background Sampler thread (started once per server process) computes a snapsho
 appends one row per team to live_history_<season>_wk<week>.csv, whether or not anyone has the page open.
 Limits: it can only record while the server is running (the hosted app sleeps after ~12 h without any visitor and its disk
 is wiped on redeploys), and it uses the shared settings from live_config.json (immune teams / cut count).
+
+If a GitHub token is supplied (Sampler(github_token=...), read from Streamlit secrets by live_app.py), the Recorder also
+pushes the week's CSV to a separate "history-archive" branch every ~10 minutes while games are live, plus once more right
+when a live window ends -- so each week's file survives redeploys and sits in the repo for good, without ever touching
+main (a push to a non-deployed branch doesn't trigger a redeploy of the live site).
 """
+import base64
 import os
 import threading
 import time
@@ -16,6 +22,7 @@ import traceback
 
 import numpy as np
 import pandas as pd
+import requests
 
 import guillotine_live as gl
 
@@ -23,6 +30,8 @@ COLUMNS = ["epoch", "live_seconds", "owner", "current", "expected_final", "sd_re
            "p_eliminated", "p_in_elim_spot", "p_first", "k"]
 MAX_CREDIT_GAP = 240      # seconds: a longer gap between two live samples is a break (no football time is credited)
 BREAK_GAP = 900           # seconds: gaps at least this long are drawn as breaks on the plots
+PUSH_INTERVAL = 600       # seconds: how often the recorded history is archived to GitHub while a game is live
+GITHUB_API = "https://api.github.com"
 
 
 def history_path(season, week, folder=None):
@@ -37,6 +46,8 @@ class Recorder:
         self.path = history_path(season, week, folder)
         self.live_seconds = 0.0
         self.last_epoch = None
+        self.last_push_epoch = 0.0
+        self.last_push_error = None
         try:
             df = load_history(season, week, folder)
             if len(df):
@@ -63,6 +74,49 @@ class Recorder:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         rows.to_csv(self.path, mode="a", header=not os.path.exists(self.path), index=False)
         return True
+
+    def maybe_push(self, token, repo, branch="history-archive", force=False, now=None):
+        """Archives this week's CSV to GitHub, throttled to PUSH_INTERVAL unless force=True. Never raises."""
+        if not token or not repo:
+            return
+        now = time.time() if now is None else now
+        if not force and now - self.last_push_epoch < PUSH_INTERVAL:
+            return
+        try:
+            _push_csv_to_github(self.path, repo, branch, token)
+            self.last_push_epoch = now
+            self.last_push_error = None
+        except Exception:
+            self.last_push_error = traceback.format_exc(limit=2)
+
+
+def _ensure_branch(repo, branch, headers):
+    r = requests.get(f"{GITHUB_API}/repos/{repo}/git/ref/heads/{branch}", headers=headers, timeout=20)
+    if r.status_code == 200:
+        return
+    default = requests.get(f"{GITHUB_API}/repos/{repo}", headers=headers, timeout=20).json()["default_branch"]
+    base_sha = requests.get(f"{GITHUB_API}/repos/{repo}/git/ref/heads/{default}", headers=headers, timeout=20).json()["object"]["sha"]
+    resp = requests.post(f"{GITHUB_API}/repos/{repo}/git/refs", headers=headers, timeout=20,
+                         json={"ref": f"refs/heads/{branch}", "sha": base_sha})
+    resp.raise_for_status()
+
+
+def _push_csv_to_github(path, repo, branch, token):
+    """Uploads path to the repo's root on branch (creating the branch off the default branch first if needed)."""
+    if not os.path.exists(path):
+        return
+    name = os.path.basename(path)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    _ensure_branch(repo, branch, headers)
+    with open(path, "rb") as f:
+        content_b64 = base64.b64encode(f.read()).decode()
+    existing = requests.get(f"{GITHUB_API}/repos/{repo}/contents/{name}", params={"ref": branch}, headers=headers, timeout=20)
+    sha = existing.json().get("sha") if existing.status_code == 200 else None
+    body = {"message": f"History: update {name}", "content": content_b64, "branch": branch}
+    if sha:
+        body["sha"] = sha
+    put = requests.put(f"{GITHUB_API}/repos/{repo}/contents/{name}", json=body, headers=headers, timeout=20)
+    put.raise_for_status()
 
 
 def load_history(season, week, folder=None):
@@ -108,9 +162,11 @@ def plot_frame(df, teams, metric):
 class Sampler(threading.Thread):
     """Background thread: snapshot every ~30 s while games are live (every ~60 s otherwise), record via a Recorder."""
 
-    def __init__(self, interval_live=30, interval_idle=60, n_sims=10000, folder=None):
+    def __init__(self, interval_live=30, interval_idle=60, n_sims=10000, folder=None,
+                 github_token=None, github_repo=None, github_branch="history-archive"):
         super().__init__(daemon=True, name="guillotine-history-sampler")
         self.interval_live, self.interval_idle, self.n_sims, self.folder = interval_live, interval_idle, n_sims, folder
+        self.github_token, self.github_repo, self.github_branch = github_token, github_repo, github_branch
         self.recorders = {}
         self.last_status, self.last_error, self.last_time = "starting", None, None
         self._stop_flag = threading.Event()
@@ -130,7 +186,10 @@ class Sampler(threading.Thread):
         snap = gl.live_snapshot(inputs["league_id"], season, week, inputs, immune_owners=cfg["immune_teams"], k=k, n_sims=self.n_sims,
                                 projection=cfg["projection_source"])
         rec = self.recorders.setdefault((season, week), Recorder(season, week, self.folder))
-        return "recorded" if rec.record(snap) else "idle"
+        recorded = rec.record(snap)
+        was_live = self.last_status == "recorded"
+        rec.maybe_push(self.github_token, self.github_repo, self.github_branch, force=was_live and not recorded)
+        return "recorded" if recorded else "idle"
 
     def run(self):
         while not self._stop_flag.is_set():

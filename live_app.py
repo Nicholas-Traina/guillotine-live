@@ -40,12 +40,22 @@ def cached_inputs(path, mtime):
     return gl.load_inputs(path)
 
 
+def _secret(key, default=None):
+    """st.secrets raises outright when no secrets.toml exists at all (true for local runs), instead of just missing the key."""
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
 @st.cache_resource
 def start_sampler():
-    """One background recorder per server process: keeps the Trends history whether or not anyone has the page open."""
+    """One background recorder per server process: keeps the Trends history whether or not anyone has the page open.
+    If a GITHUB_TOKEN secret is set, it also archives each week's history to the "history-archive" branch (see
+    guillotine_history.py) so it survives redeploys instead of living only on this server's disk."""
     if os.environ.get("GUILLOTINE_NO_LOG"):                      # tests / previews must not write real history
         return None
-    sampler = gh.Sampler()
+    sampler = gh.Sampler(github_token=_secret("GITHUB_TOKEN"), github_repo=_secret("GITHUB_REPO", "Nicholas-Traina/guillotine-live"))
     sampler.start()
     return sampler
 
@@ -59,7 +69,11 @@ def recorder_status_text():
         return ""
     when = gl.format_central(sampler.last_time, seconds=False) if sampler.last_time else "starting up"
     state = {"recorded": "recording (a game is live)", "idle": "waiting for a game to start"}.get(sampler.last_status, sampler.last_status)
-    return f"Recorder: {state} · last check {when}" + (" · hit an error, retrying" if sampler.last_error else "")
+    archive = ""
+    if sampler.github_token:
+        push_error = next((r.last_push_error for r in sampler.recorders.values() if r.last_push_error), None)
+        archive = " · history archiving: error, retrying" if push_error else " · history archiving: on"
+    return f"Recorder: {state} · last check {when}" + (" · hit an error, retrying" if sampler.last_error else "") + archive
 
 
 def show_chart(chart):
