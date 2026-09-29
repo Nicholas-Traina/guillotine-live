@@ -75,8 +75,11 @@ def add_return_points(players, sleeper, scoring, return_pts, returner_min=RETURN
         model = float(p["projected_points"])
         stats = sleeper.get(pid)
         sp = league_projection(stats, scoring)
-        comp = projected_return_points(stats, scoring)
-        ret = float(return_pts.get(pid, 0.0))
+        is_def = p.get("position") == "DEF"
+        # a team defense gets no return points, and real defense scoring never credits return yards either, so Sleeper's own
+        # projection has no "phantom" return component to strip out for one: sleeper_plus_returns should just equal sleeper_projection
+        comp = 0.0 if is_def else projected_return_points(stats, scoring)
+        ret = 0.0 if is_def else float(return_pts.get(pid, 0.0))
         p["model_projection"] = round(model, 3)
         p["sleeper_return_comp"] = round(comp, 3)
         p["return_pts_projection"] = round(ret, 3)
