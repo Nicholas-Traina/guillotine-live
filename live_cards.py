@@ -45,8 +45,10 @@ div[data-testid="stElementContainer"]:has(.gbn) { position: sticky; top: 3.75rem
 .gb { display: grid; grid-template-columns: 5rem 1fr 3.4rem; align-items: center; gap: .45rem; margin: .2rem 0; font-size: .82rem; }
 .gt { height: .62rem; background: rgba(128,128,128,.28); border-radius: 999px; overflow: hidden; }
 .gf { height: 100%; border-radius: 999px; }
-.gf.el { background: #e5484d; } .gf.la { background: #f5a524; } .gf.se { background: #f5a524; opacity: .65; } .gf.fi { background: #30a46c; }
+.gf.el { background: #e5484d; } .gf.fi { background: #30a46c; }
 .gp { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.gpl { margin-top: .35rem; font-size: .72rem; line-height: 1.4; opacity: .8; }
+.gpl b { opacity: 1; font-weight: 700; }
 @media (max-width: 640px) {
   div[data-testid="stMainBlockContainer"], .block-container { padding: 3.6rem .6rem 3rem !important; }   /* clear Streamlit's fixed top bar */
   h1 { font-size: 1.5rem !important; } h3 { font-size: 1.25rem !important; }
@@ -100,26 +102,51 @@ def risk_class(p_elim_pct, p_first_pct=0.0, in_zone=False):
 
 
 def in_elim_zone(standings, k):
-    """Bool list, one per team: red-flagged teams. A team that can be cut is red when it is one of the k teams with the highest chance of
-    being eliminated. An immune team can't be cut, so it is red when it WOULD be red without immunity: when its chance of finishing in a cut
-    position (p_in_elim_spot, which ignores immunity) is among the k highest of all teams."""
+    """Bool list, one per team: red-flagged teams. p_in_elim_spot already equals a non-immune team's real elimination chance and an
+    immune team's chance of losing immunity, so both groups are picked the same way: the k teams (within each group) with the
+    highest p_in_elim_spot -- a non-immune team is red when it's one of the k real cuts, an immune team is red when it WOULD be
+    one of them without immunity."""
     n = len(standings)
-    pe = [float(x) for x in standings["p_eliminated"]]
     imm = [bool(i) for i in standings["immune"]]
-    pin = [float(x) for x in standings["p_in_elim_spot"]] if "p_in_elim_spot" in standings else [0.0] * n
+    pin = [float(x) for x in standings["p_in_elim_spot"]]
     k = max(int(k), 0)
-    cut = set(sorted((i for i in range(n) if not imm[i]), key=lambda i: -pe[i])[:k])
-    would_cut = set(sorted(range(n), key=lambda i: -pin[i])[:k]) if "p_in_elim_spot" in standings else set()
+    cut = set(sorted((i for i in range(n) if not imm[i]), key=lambda i: -pin[i])[:k])
+    would_cut = set(sorted(range(n), key=lambda i: -pin[i])[:k])
     return [(i in cut) if not imm[i] else (i in would_cut) for i in range(n)]
 
 
-def team_card(row, k, show_last, is_me=False):
-    """row: one team of the standings table with probabilities as fractions (0-1). Returns an HTML string."""
-    pe, pl, p2, pf = (float(row[c]) * 100 for c in ("p_eliminated", "p_last", "p_second_last", "p_first"))
+POS_ORDER = {"QB": 0, "RB": 1, "WR": 2, "TE": 3, "K": 4, "DEF": 5}
+
+
+def _player_sort_key(r):
+    name = str(r["player"]).rstrip("*").strip()
+    last = name.rsplit(" ", 1)[-1].lower() if name else ""
+    return (POS_ORDER.get(r["pos"], 99), last)
+
+
+def _player_label(r):
+    name = str(r["player"]).rstrip("*").strip()
+    team = r.get("nfl_team") or ""
+    return f"{name} ({r['pos']} - {team})" if team else f"{name} ({r['pos']})"
+
+
+def player_list_html(details, state, label):
+    """One '<b>label:</b> Name (POS - TEAM), ...' line for a team's starters in this game state (QB/RB/WR/TE/K/DEF, then last name); '' if none."""
+    if details is None or not len(details):
+        return ""
+    rows = sorted((r for _, r in details.iterrows() if r["state"] == state), key=_player_sort_key)
+    if not rows:
+        return ""
+    names = ", ".join(_player_label(r) for r in rows)
+    return f'<div class="gpl"><b>{html.escape(label)}:</b> {html.escape(names)}</div>'
+
+
+def team_card(row, k, is_me=False, details=None):
+    """row: one team of the standings table with probabilities as fractions (0-1). `details` (optional): that team's starter
+    table (snap['details'][roster_id]), to list who's yet to play / currently playing. Returns an HTML string."""
+    pin, pf = (float(row[c]) * 100 for c in ("p_in_elim_spot", "p_first"))
     immune, locked = bool(row["immune"]), bool(row["locked"])
-    # an immune team can't be eliminated, so its risk colour comes from its chance of finishing in a cut position instead
-    risk = float(row["p_in_elim_spot"]) * 100 if immune and "p_in_elim_spot" in row else pe
-    cls = risk_class(risk, pf, bool(row.get("in_zone", False))) + (" imm" if immune else "") + (" me" if is_me else "")
+    cls = risk_class(pin, pf, bool(row.get("in_zone", False))) + (" imm" if immune else "") + (" me" if is_me else "")
     tags = ""
     if immune:
         tags += '<span class="gtag">🛡 immune</span>'
@@ -127,25 +154,24 @@ def team_card(row, k, show_last, is_me=False):
         tags += '<span class="gtag">LOCKED</span>'
     name = ("★ " if is_me else "") + str(row["owner"])
     rank = f'{"T" if bool(row.get("rank_tied", False)) else "#"}{int(row["rank_now"])}'      # T = tied (e.g. everyone on 0 before kickoff)
-    bars = _bar("Eliminated" if k == 1 else f"Bottom {k}", pe, "el")
-    if show_last:
-        bars += _bar("Last", pl, "la")
-        if k > 1:
-            bars += _bar("2nd last", p2, "se")
-    bars += _bar("First", pf, "fi")
+    bars = _bar("Elim spot", pin, "el") + _bar("First", pf, "fi")
+    players = player_list_html(details, "pre", "Yet to play") + player_list_html(details, "in", "In play")
     return (
         f'<div class="gc {cls}"><div class="gh"><span class="gr">{rank}</span>'
         f'<span class="gnm">{html.escape(name)}</span>{tags}</div>'
         f'<div class="gn"><div><b>{float(row["current"]):.1f}</b><small>points</small></div>'
         f'<div><b>{float(row["expected_final"]):.1f}</b><small>proj. final (±{float(row["sd_remaining"]):.0f})</small></div>'
         f'<div><b>{float(row["progress"]) * 100:.0f}%</b><small>games done</small></div></div>'
-        f'{bars}</div>'
+        f'{bars}{players}</div>'
     )
 
 
-def cards_html(standings, k, my_team=""):
-    """standings: DataFrame with owner, current, expected_final, sd_remaining, progress, rank_now, p_*, immune, locked."""
-    show_last = k > 1 or bool(standings["immune"].any())        # with one cut and no immunity, 'last' equals 'eliminated'
+def cards_html(standings, k, my_team="", details=None):
+    """standings: DataFrame with owner, roster_id, current, expected_final, sd_remaining, progress, rank_now, p_*, immune, locked.
+    `details` (optional): snap['details'], {roster_id: starter table}, to list each team's yet-to-play / in-play starters."""
     standings = standings.assign(in_zone=in_elim_zone(standings, k))
-    cards = "".join(team_card(r, k, show_last, is_me=(r["owner"] == my_team)) for _, r in standings.iterrows())
+    cards = "".join(
+        team_card(r, k, is_me=(r["owner"] == my_team), details=(details.get(int(r["roster_id"])) if details else None))
+        for _, r in standings.iterrows()
+    )
     return CSS + f'<div class="gg">{cards}</div>'

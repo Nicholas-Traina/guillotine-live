@@ -23,10 +23,14 @@ st.markdown(live_cards.CSS, unsafe_allow_html=True)
 REFRESH_STALE_MINUTES = 27 * 60      # projections refresh once a day (about 11 AM Central): warn only once a whole day plus 3 hours of slack has been missed
 
 SORTS = {
-    "Elimination risk": (["p_eliminated", "p_last"], False),
-    "Points now": (["current"], False),
-    "Projected final": (["expected_final"], False),
-    "First-place chance": (["p_first"], False),
+    # each list's primary column sorts worst/best-first as before; on a tie, break by the OTHER probability column (lowest to
+    # highest) -- p_in_elim_spot already equals p_eliminated for a non-immune team and is an immune team's real odds of losing
+    # immunity, so it alone slots every team in by real risk instead of clumping all-0% teams together -- then break any
+    # remaining tie by projected final (lowest to highest)
+    "Elimination risk": (["p_in_elim_spot", "p_first", "expected_final"], [False, True, True]),
+    "Points now": (["current"], [False]),
+    "Projected final": (["expected_final"], [False]),
+    "First-place chance": (["p_first", "p_in_elim_spot", "expected_final"], [False, True, True]),
 }
 
 
@@ -194,13 +198,13 @@ def live_panel():
         if view == "Cards":
             st.caption("Left edge: 🔴 in an elimination spot (the teams most likely to be cut) · 🟠 5%+ chance of elimination · 🟢 under 5% · dark green 10%+ chance of first place. "
                        "🛡 Immune teams are blue on top; below it they're coloured by their chance of finishing in a cut spot, as if they weren't immune.")
-            st.markdown(live_cards.cards_html(s, snap["k"], my_team), unsafe_allow_html=True)
+            st.markdown(live_cards.cards_html(s, snap["k"], my_team, details=snap["details"]), unsafe_allow_html=True)
         else:
             t = s.copy()
             t["team"] = [("★ " if o == my_team else "") + ("🛡 " if imm else "") + o for o, imm in zip(t["owner"], t["immune"])]
             t["status"] = ["LOCKED" if lk else ("immune" if imm else "") for lk, imm in zip(t["locked"], t["immune"])]
             t["done"] = t["progress"] * 100
-            for c in ("p_eliminated", "p_last", "p_second_last", "p_first"):
+            for c in ("p_in_elim_spot", "p_first"):
                 t[c] = t[c] * 100
             pct = st.column_config.ProgressColumn
             cols = {
@@ -210,16 +214,13 @@ def live_panel():
                 "expected_final": st.column_config.NumberColumn("Projected final", format="%.1f"),
                 "sd_remaining": st.column_config.NumberColumn("± (1 sd)", format="%.1f", help="Uncertainty in the points still to come"),
                 "done": pct("Game time done", format="%.0f%%", min_value=0, max_value=100, help="Average share of the starters' games already played"),
-                "p_eliminated": pct(f"P(eliminated, bottom {snap['k']})" if snap["k"] > 1 else "P(eliminated)", format="%.1f%%", min_value=0, max_value=100),
-                "p_last": pct("P(last)", format="%.1f%%", min_value=0, max_value=100),
-                "p_second_last": pct("P(2nd last)", format="%.1f%%", min_value=0, max_value=100),
+                "p_in_elim_spot": pct("Finish in elim spot", format="%.1f%%", min_value=0, max_value=100,
+                                      help="Chance of finishing among this week's cut spots. For a non-immune team this is the same as its elimination chance; "
+                                           "for an immune team this is its chance of losing immunity (and, if that cascades past it, the actual cut still lands on the next non-immune team down)."),
                 "p_first": pct("P(first)", format="%.1f%%", min_value=0, max_value=100),
                 "status": "Status",
             }
-            show = ["rank_now", "team", "current", "expected_final", "sd_remaining", "done", "p_eliminated", "p_last"]
-            if snap["k"] > 1:
-                show.append("p_second_last")
-            show += ["p_first", "status"]
+            show = ["rank_now", "team", "current", "expected_final", "sd_remaining", "done", "p_in_elim_spot", "p_first", "status"]
             st.dataframe(t[show], hide_index=True, width="stretch", column_config={c: cols[c] for c in show}, height=min(880, 40 + 35 * len(t)))
 
     with tab_detail:
@@ -318,5 +319,7 @@ with st.expander("How this works"):
                 "The banner is for **★ My team**: its **safe scores** beat the elimination cut line (the k-th lowest score among the other teams that can be cut) in 50% and 95% of simulations, "
                 "and its **winning score** is 0.1 above the best other team's score in the median simulation, so it beats every other team half the time. "
                 "An immune team's safe scores are the scores that keep its immunity (finishing above the team that would be cut). Hide the banner in Settings. "
-                "**Eliminated** = chance of being among the lowest scorers who get cut (immune teams can't be cut). **First** = chance of the week's highest score. "
+                "**Finish in elim spot** = chance of finishing among this week's cut spots. For a non-immune team that's its elimination chance; for an immune team it's the chance it loses "
+                "immunity -- and if two immune teams both land in cut spots, the actual cuts cascade down to the next non-immune teams below them, so e.g. in a 2-cut week a non-immune team in "
+                "last with two immune teams 2nd/3rd-to-last means both immune teams lose immunity AND the non-immune team 4th-to-last is the second real cut. **First** = chance of the week's highest score. "
                 "Ties in points are shown as T-ranks.")

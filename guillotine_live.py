@@ -597,7 +597,7 @@ def live_team_table(matchups, inputs, games, projection=None, slots=None, varian
 
 
 def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
-    """Adds P(last), P(2nd-to-last), P(eliminated), P(first place) to the team table."""
+    """Adds P(last), P(2nd-to-last), P(eliminated), P(in an elimination spot), P(first place) to the team table."""
     t = teams.copy().reset_index(drop=True)
     T = len(t)
     if T == 0:
@@ -609,12 +609,22 @@ def simulate_standings(teams, k, immune_owners=(), n_sims=20000, seed=42):
     rank = total.argsort(axis=0).argsort(axis=0)                                                 # 0 = lowest score
     immune = t["owner"].str.lower().isin({u.lower() for u in immune_owners}).values
     k_eff = int(min(k, (~immune).sum()))
-    rank_elig = np.where(immune[:, None], np.inf, total).argsort(axis=0).argsort(axis=0)
+    elig_scores = np.where(immune[:, None], np.inf, total)             # immune teams pushed out of the elimination competition entirely
+    rank_elig = elig_scores.argsort(axis=0).argsort(axis=0)
     t["p_last"] = (rank == 0).mean(axis=1)
     t["p_second_last"] = (rank == 1).mean(axis=1)
     t["p_eliminated"] = ((rank_elig < k_eff) & ~immune[:, None]).mean(axis=1)
     t["p_first"] = (rank == T - 1).mean(axis=1)
-    t["p_in_elim_spot"] = (rank < min(int(k), T)).mean(axis=1)        # finishes in a cut position, whether or not immune
+    # "in an elimination spot": at or below the score of the k_eff-th lowest NON-immune team, per simulation. An immune team here
+    # loses its immunity but isn't cut, so the real cut cascades down to the next non-immune team below it -- e.g. with a double
+    # elimination week, a non-immune team in last plus two immune teams 2nd/3rd-to-last means both immune teams lose immunity AND
+    # 4th-to-last (if non-immune) is the second real cut. Using the same non-immune-only cutoff as p_eliminated reproduces exactly
+    # that cascade for every team at once, immune or not.
+    if k_eff > 0:
+        cutoff = np.sort(elig_scores, axis=0)[k_eff - 1]               # score of the k_eff-th lowest non-immune team, per simulation
+        t["p_in_elim_spot"] = (total <= cutoff[None, :]).mean(axis=1)
+    else:
+        t["p_in_elim_spot"] = 0.0
     t["immune"] = immune
     t["locked"] = (t["expected_remaining"] == 0) & (t["sd_remaining"] == 0)
     t["k"] = k_eff
