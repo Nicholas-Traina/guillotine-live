@@ -270,7 +270,7 @@ def live_panel():
             st.caption(recorder_status_text())
         else:
             all_teams = sorted(hist["owner"].unique(), key=str.lower)
-            kickoff = hist[hist["epoch"] == hist["epoch"].min()].set_index("owner")
+            latest = hist[hist["epoch"] == hist["epoch"].max()].set_index("owner")
             breaks = gh.find_breaks(hist)
 
             # picking (or changing) My team adds it to every already-customized chart selection, on top of whatever teams were already chosen
@@ -285,7 +285,7 @@ def live_panel():
                 title, blurb = live_charts.TITLES[metric]
                 st.markdown(f"**{title}**")
                 st.caption(blurb)
-                ranked = [t for t in kickoff[metric].sort_values(ascending=False).index if t in all_teams]
+                ranked = [t for t in latest[metric].sort_values(ascending=False).index if t in all_teams]
                 if my_team in all_teams:
                     default = [my_team] + [t for t in ranked if t != my_team][:4]
                 else:
